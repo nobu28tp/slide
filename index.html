@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SlideCraft - HTML Slide Editor</title>
+  <!-- Google Fonts Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script type="module" crossorigin>(function(){const e=document.createElement("link").relList;if(e&&e.supports&&e.supports("modulepreload"))return;for(const i of document.querySelectorAll('link[rel="modulepreload"]'))n(i);new MutationObserver(i=>{for(const s of i)if(s.type==="childList")for(const r of s.addedNodes)r.tagName==="LINK"&&r.rel==="modulepreload"&&n(r)}).observe(document,{childList:!0,subtree:!0});function t(i){const s={};return i.integrity&&(s.integrity=i.integrity),i.referrerPolicy&&(s.referrerPolicy=i.referrerPolicy),i.crossOrigin==="use-credentials"?s.credentials="include":i.crossOrigin==="anonymous"?s.credentials="omit":s.credentials="same-origin",s}function n(i){if(i.ep)return;i.ep=!0;const s=t(i);fetch(i.href,s)}})();const v=1280,E=720,B="slidecraft_project_data";class T{constructor(){this.slides=[],this.currentSlideId=null,this.selectedElementId=null,this.undoStack=[],this.redoStack=[],this.maxHistorySize=50,this.clipboard=null,this.listeners=new Set,this.loadFromStorage(),this.slides.length===0&&this.createInitialProject()}subscribe(e){return this.listeners.add(e),()=>this.listeners.delete(e)}notify(e,t={}){for(const n of this.listeners)n(e,this,t)}createInitialProject(){const e=this.createSlide();this.slides=[e],this.currentSlideId=e.id,this.selectedElementId=null,this.undoStack=[],this.redoStack=[],this.saveToStorage()}newProject(){const e=this.createSlide();this.slides=[e],this.currentSlideId=e.id,this.selectedElementId=null,this.undoStack=[],this.redoStack=[],this.saveToStorage(),this.notify("projectImport")}createSlide(){return{id:"slide-"+Math.random().toString(36).substr(2,9),background:{type:"color",value:"#1e1e24"},elements:[{id:"elem-"+Math.random().toString(36).substr(2,9),type:"text",x:140,y:200,width:1e3,height:120,content:"タイトルを入力",style:{fontSize:64,color:"#ffffff",fontWeight:"bold",fontStyle:"normal",textDecoration:"none",textAlign:"center",fontFamily:"Inter, sans-serif",backgroundColor:"transparent"}},{id:"elem-"+Math.random().toString(36).substr(2,9),type:"text",x:240,y:380,width:800,height:80,content:"サブタイトルを入力してください",style:{fontSize:28,color:"#a0aec0",fontWeight:"normal",fontStyle:"normal",textDecoration:"none",textAlign:"center",fontFamily:"Inter, sans-serif",backgroundColor:"transparent"}}]}}getCurrentSlide(){return this.slides.find(e=>e.id===this.currentSlideId)||null}getSelectedElement(){const e=this.getCurrentSlide();return!e||!this.selectedElementId?null:e.elements.find(t=>t.id===this.selectedElementId)||null}pushCheckpoint(){const e=JSON.stringify({slides:this.slides,currentSlideId:this.currentSlideId,selectedElementId:this.selectedElementId});this.undoStack.push(e),this.undoStack.length>this.maxHistorySize&&this.undoStack.shift(),this.redoStack=[]}undo(){if(this.undoStack.length===0)return;const e=JSON.stringify({slides:this.slides,currentSlideId:this.currentSlideId,selectedElementId:this.selectedElementId});this.redoStack.push(e);const t=JSON.parse(this.undoStack.pop());this.slides=t.slides,this.currentSlideId=t.currentSlideId,this.selectedElementId=t.selectedElementId,this.saveToStorage(),this.notify("undo")}redo(){if(this.redoStack.length===0)return;const e=JSON.stringify({slides:this.slides,currentSlideId:this.currentSlideId,selectedElementId:this.selectedElementId});this.undoStack.push(e);const t=JSON.parse(this.redoStack.pop());this.slides=t.slides,this.currentSlideId=t.currentSlideId,this.selectedElementId=t.selectedElementId,this.saveToStorage(),this.notify("redo")}selectSlide(e){this.currentSlideId!==e&&(this.selectedElementId=null,this.currentSlideId=e,this.notify("slideSelect"))}addSlide(){this.pushCheckpoint();const e=this.createSlide(),t=this.slides.findIndex(n=>n.id===this.currentSlideId);t!==-1?this.slides.splice(t+1,0,e):this.slides.push(e),this.currentSlideId=e.id,this.selectedElementId=null,this.saveToStorage(),this.notify("slideAdd")}duplicateSlide(e){const t=this.slides.find(s=>s.id===e);if(!t)return;this.pushCheckpoint();const n=JSON.parse(JSON.stringify(t));n.id="slide-"+Math.random().toString(36).substr(2,9),n.elements.forEach(s=>{s.id="elem-"+Math.random().toString(36).substr(2,9)});const i=this.slides.findIndex(s=>s.id===e);this.slides.splice(i+1,0,n),this.currentSlideId=n.id,this.selectedElementId=null,this.saveToStorage(),this.notify("slideDuplicate")}deleteSlide(e){if(this.slides.length<=1)return;this.pushCheckpoint();const t=this.slides.findIndex(n=>n.id===e);if(this.slides=this.slides.filter(n=>n.id!==e),this.currentSlideId===e){const n=Math.min(t,this.slides.length-1);this.currentSlideId=this.slides[n].id}this.selectedElementId=null,this.saveToStorage(),this.notify("slideDelete")}reorderSlides(e,t){if(e===t)return;this.pushCheckpoint();const n=this.slides.findIndex(r=>r.id===e),i=this.slides.findIndex(r=>r.id===t);if(n===-1||i===-1)return;const[s]=this.slides.splice(n,1);this.slides.splice(i,0,s),this.saveToStorage(),this.notify("slideReorder")}updateSlideBackground(e){const t=this.getCurrentSlide();t&&(this.pushCheckpoint(),t.background={...t.background,...e},this.saveToStorage(),this.notify("slideUpdate"))}copySelectedElement(){const e=this.getSelectedElement();e&&(this.clipboard=JSON.parse(JSON.stringify(e)))}pasteCopiedElement(){if(!this.clipboard)return;const e=this.getCurrentSlide();if(!e)return;this.pushCheckpoint();const t=JSON.parse(JSON.stringify(this.clipboard));t.id="elem-"+Math.random().toString(36).substr(2,9),t.x=(t.x||100)+30,t.y=(t.y||100)+30,t.x>1100&&(t.x=100),t.y>600&&(t.y=100),e.elements.push(t),this.selectedElementId=t.id,this.saveToStorage(),this.notify("elementAdd",{elementId:t.id})}selectElement(e){this.selectedElementId!==e&&(this.selectedElementId=e,this.notify("elementSelect"))}addElement(e,t={}){const n=this.getCurrentSlide();if(!n)return;this.pushCheckpoint();let i={id:"elem-"+Math.random().toString(36).substr(2,9),type:e,x:100,y:100,width:200,height:100,content:"",style:{backgroundColor:"#4a5568",borderRadius:0,borderWidth:0,borderColor:"#ffffff",borderStyle:"none"}};e==="text"?(i.width=400,i.height=80,i.content="テキストを入力してください",i.style={fontSize:32,color:"#ffffff",fontWeight:"normal",fontStyle:"normal",textDecoration:"none",textAlign:"left",fontFamily:"Inter, sans-serif",backgroundColor:"transparent"}):e==="image"?(i.width=400,i.height=300,i.content=t.url||"https://images.unsplash.com/photo-1579546929518-9e396f3cc809?w=800",i.style={borderRadius:8,borderWidth:0,borderColor:"#ffffff",borderStyle:"none"}):e==="shape"&&(i.width=200,i.height=200,i.content=t.shapeType||"rect",i.style={backgroundColor:"rgba(99, 102, 241, 0.8)",borderRadius:t.shapeType==="circle"?9999:8,borderWidth:2,borderColor:"#6366f1",borderStyle:"solid"}),t.x&&(i.x=t.x),t.y&&(i.y=t.y),t.width&&(i.width=t.width),t.height&&(i.height=t.height),n.elements.push(i),this.selectedElementId=i.id,this.saveToStorage(),this.notify("elementAdd",{elementId:i.id})}updateElement(e,t){const n=this.getCurrentSlide();if(!n)return;const i=n.elements.find(r=>r.id===e);if(!i)return;const s=t._isDragResize;delete t._isDragResize,s||this.pushCheckpoint(),t.style&&i.style&&(t.style={...i.style,...t.style}),Object.assign(i,t),this.saveToStorage(),this.notify("elementUpdate",{elementId:e})}deleteElement(e){const t=this.getCurrentSlide();!t||!t.elements.some(i=>i.id===e)||(this.pushCheckpoint(),t.elements=t.elements.filter(i=>i.id!==e),this.selectedElementId===e&&(this.selectedElementId=null),this.saveToStorage(),this.notify("elementDelete"))}bringToFront(e){const t=this.getCurrentSlide();if(!t)return;const n=t.elements.findIndex(s=>s.id===e);if(n===-1||n===t.elements.length-1)return;this.pushCheckpoint();const[i]=t.elements.splice(n,1);t.elements.push(i),this.saveToStorage(),this.notify("elementReorder")}sendToBack(e){const t=this.getCurrentSlide();if(!t)return;const n=t.elements.findIndex(s=>s.id===e);if(n===-1||n===0)return;this.pushCheckpoint();const[i]=t.elements.splice(n,1);t.elements.unshift(i),this.saveToStorage(),this.notify("elementReorder")}importProject(e){return!e||!Array.isArray(e.slides)?!1:(this.pushCheckpoint(),this.slides=e.slides,this.currentSlideId=e.currentSlideId||this.slides[0].id,this.selectedElementId=null,this.saveToStorage(),this.notify("projectImport"),!0)}saveToStorage(){try{const e={slides:this.slides,currentSlideId:this.currentSlideId};localStorage.setItem(B,JSON.stringify(e))}catch(e){console.error("Failed to save state to localStorage",e)}}loadFromStorage(){try{const e=localStorage.getItem(B);if(e){const t=JSON.parse(e);t.slides&&t.slides.length>0&&(this.slides=t.slides,this.currentSlideId=t.currentSlideId||this.slides[0].id)}}catch(e){console.warn("Failed to load state from localStorage",e)}}}class L{constructor(e){this.state=e,this.container=document.getElementById("canvas-container"),this.canvas=document.getElementById("slide-canvas"),this.scale=1,this.isDragging=!1,this.isResizing=!1,this.resizeDirection=null,this.dragStartPos={x:0,y:0},this.elementStartBounds={x:0,y:0,width:0,height:0},this.isEditingText=!1,this.activeTextElementId=null,this.snapToGrid=!0,this.gridSize=10,window.addEventListener("resize",()=>this.resizeCanvas()),this.setupGlobalEvents(),this.state.subscribe(t=>this.handleStateChange(t)),this.resizeCanvas()}setupGlobalEvents(){this.container.addEventListener("mousedown",e=>{(e.target===this.container||e.target===this.canvas)&&(this.isEditingText&&this.finishTextEditing(),this.state.selectElement(null))}),document.addEventListener("mousemove",e=>this.handleMouseMove(e)),document.addEventListener("mouseup",()=>this.handleMouseUp()),document.addEventListener("keydown",e=>{if(this.isEditingText)return;const t=this.state.selectedElementId;if(t){if(e.key==="Delete"||e.key==="Backspace")this.state.deleteElement(t);else if(e.key.startsWith("Arrow")){e.preventDefault();const n=this.state.getSelectedElement();if(!n)return;let i=0,s=0;const r=e.shiftKey?10:1;e.key==="ArrowLeft"&&(i=-r),e.key==="ArrowRight"&&(i=r),e.key==="ArrowUp"&&(s=-r),e.key==="ArrowDown"&&(s=r),this.state.updateElement(t,{x:n.x+i,y:n.y+s})}}})}resizeCanvas(){if(!this.container||!this.canvas)return;const e=document.getElementById("canvas-wrapper");if(!e)return;const t=this.container.clientWidth-80,n=this.container.clientHeight-80,i=v/E,s=t/n;let r,o;s>i?(o=n,r=o*i):(r=t,o=r/i),this.scale=r/v,e.style.width=`${r}px`,e.style.height=`${o}px`,this.canvas.style.width=`${v}px`,this.canvas.style.height=`${E}px`,this.canvas.style.transform=`scale(${this.scale})`}handleStateChange(e){(e==="slideSelect"||e==="slideAdd"||e==="slideDelete"||e==="slideUpdate"||e==="elementAdd"||e==="elementDelete"||e==="elementSelect"||e==="elementUpdate"||e==="elementReorder"||e==="projectImport"||e==="undo"||e==="redo")&&this.render()}getClientToVirtual(e,t){const n=this.canvas.getBoundingClientRect();return{x:(e-n.left)/this.scale,y:(t-n.top)/this.scale}}render(){const e=this.state.getCurrentSlide();if(!e){this.canvas.innerHTML="";return}this.applyBackground(this.canvas,e.background);const t=this.state.selectedElementId,i=Array.from(this.canvas.querySelectorAll(".slide-element")).find(s=>s.dataset.id===this.activeTextElementId);this.canvas.innerHTML="",e.elements.forEach(s=>{if(this.isEditingText&&s.id===this.activeTextElementId&&i){this.updateElementDomStyles(i,s),this.canvas.appendChild(i),this.renderSelectionOutline(i,s);return}const r=this.createElementDom(s);this.canvas.appendChild(r),s.id===t&&this.renderSelectionOutline(r,s)})}updateElementDomStyles(e,t){e.style.left=`${t.x}px`,e.style.top=`${t.y}px`,e.style.width=`${t.width}px`,e.style.height=`${t.height}px`,e.style.zIndex=t.zIndex||""}applyBackground(e,t){t.type==="color"||t.type==="gradient"?e.style.background=t.value:t.type==="image"&&(e.style.background=`url('${t.value}') no-repeat center center`,e.style.backgroundSize="cover")}createElementDom(e){const t=document.createElement("div");t.className=`slide-element type-${e.type}`,t.dataset.id=e.id,this.updateElementDomStyles(t,e);const n=document.createElement("div");if(n.className="element-inner",e.type==="text")n.className+=" text-inner",n.innerText=e.content,this.applyTextStyle(n,e.style),t.addEventListener("dblclick",i=>{i.stopPropagation(),this.startTextEditing(t,e)});else if(e.type==="image"){const i=document.createElement("img");i.src=e.content,i.style.width="100%",i.style.height="100%",i.style.objectFit="cover",e.style.borderRadius&&(i.style.borderRadius=`${e.style.borderRadius}px`),n.appendChild(i),this.applyShapeStyle(n,e.style)}else if(e.type==="shape"){const i=e.content;n.className+=` shape-${i}`,this.applyShapeStyle(n,e.style),i==="triangle"&&(n.style.clipPath="polygon(50% 0%, 0% 100%, 100% 100%)",n.style.backgroundColor=e.style.backgroundColor)}return t.appendChild(n),t.addEventListener("mousedown",i=>{if(this.isEditingText&&this.activeTextElementId===e.id)return;i.stopPropagation(),this.isEditingText&&this.finishTextEditing(),this.state.selectElement(e.id),this.isDragging=!0;const s=this.getClientToVirtual(i.clientX,i.clientY);this.dragStartPos=s,this.elementStartBounds={x:e.x,y:e.y,width:e.width,height:e.height}}),t}applyTextStyle(e,t){t&&(e.style.fontSize=`${t.fontSize}px`,e.style.color=t.color,e.style.fontWeight=t.fontWeight,e.style.fontStyle=t.fontStyle,e.style.textDecoration=t.textDecoration,e.style.textAlign=t.textAlign,e.style.fontFamily=t.fontFamily,e.style.backgroundColor=t.backgroundColor||"transparent")}applyShapeStyle(e,t){t&&(e.style.backgroundColor=t.backgroundColor,e.style.borderRadius=`${t.borderRadius}px`,e.style.borderWidth=`${t.borderWidth}px`,e.style.borderColor=t.borderColor,e.style.borderStyle=t.borderStyle)}renderSelectionOutline(e,t){const n=document.createElement("div");n.className="selection-outline",e.appendChild(n),["nw","n","ne","e","se","s","sw","w"].forEach(s=>{const r=document.createElement("div");r.className=`resize-handle handle-${s}`,r.dataset.direction=s,r.addEventListener("mousedown",o=>{o.stopPropagation(),o.preventDefault(),this.isResizing=!0,this.resizeDirection=s;const d=this.getClientToVirtual(o.clientX,o.clientY);this.dragStartPos=d,this.elementStartBounds={x:t.x,y:t.y,width:t.width,height:t.height}}),n.appendChild(r)})}handleMouseMove(e){if(!this.isDragging&&!this.isResizing)return;const t=this.state.getSelectedElement();if(!t)return;const n=this.getClientToVirtual(e.clientX,e.clientY);let i=n.x-this.dragStartPos.x,s=n.y-this.dragStartPos.y;if(this.isDragging){let r=this.elementStartBounds.x+i,o=this.elementStartBounds.y+s;this.snapToGrid&&(r=Math.round(r/this.gridSize)*this.gridSize,o=Math.round(o/this.gridSize)*this.gridSize),this.state.updateElement(t.id,{x:r,y:o,_isDragResize:!0})}else if(this.isResizing){let{x:r,y:o,width:d,height:l}=this.elementStartBounds;const g=this.resizeDirection,m=t.type==="image"||e.shiftKey,c=d/l;if(g.includes("e"))d=Math.max(10,d+i);else if(g.includes("w")){const u=d-i;u>10&&(d=u,r=r+i)}if(g.includes("s"))l=Math.max(10,l+s);else if(g.includes("n")){const u=l-s;u>10&&(l=u,o=o+s)}m&&(g==="e"||g==="w"||Math.abs(i)>Math.abs(s)?(l=d/c,g.includes("n")&&(o=this.elementStartBounds.y+(this.elementStartBounds.height-l))):(d=l*c,g.includes("w")&&(r=this.elementStartBounds.x+(this.elementStartBounds.width-d)))),this.snapToGrid&&(d=Math.round(d/this.gridSize)*this.gridSize,l=Math.round(l/this.gridSize)*this.gridSize,r=Math.round(r/this.gridSize)*this.gridSize,o=Math.round(o/this.gridSize)*this.gridSize),this.state.updateElement(t.id,{x:r,y:o,width:d,height:l,_isDragResize:!0})}}handleMouseUp(){(this.isDragging||this.isResizing)&&(this.isDragging=!1,this.isResizing=!1,this.resizeDirection=null,this.state.getSelectedElement()&&(this.state.pushCheckpoint(),this.state.saveToStorage()))}startTextEditing(e,t){this.isEditingText&&this.finishTextEditing(),this.isEditingText=!0,this.activeTextElementId=t.id;const n=e.querySelector(".text-inner");n.contentEditable="true",n.focus();const i=document.createRange();i.selectNodeContents(n);const s=window.getSelection();s.removeAllRanges(),s.addRange(i),n.addEventListener("mousedown",r=>r.stopPropagation()),n.addEventListener("blur",()=>{this.finishTextEditing()}),n.addEventListener("keydown",r=>{r.key==="Escape"&&(n.innerText=t.content,n.blur())})}finishTextEditing(){if(!this.isEditingText||!this.activeTextElementId)return;const e=this.state.getCurrentSlide().elements.find(t=>t.id===this.activeTextElementId);if(e){const t=this.canvas.querySelector(`[data-id="${e.id}"]`);if(t){const n=t.querySelector(".text-inner");n.contentEditable="false";const i=n.innerText.trim();i!==e.content&&this.state.updateElement(e.id,{content:i||"テキストを入力してください"})}}this.isEditingText=!1,this.activeTextElementId=null,this.render()}}class D{constructor(e){this.state=e,this.slideListContainer=document.getElementById("slide-list"),this.addSlideBtn=document.getElementById("add-slide-btn"),this.draggedSlideId=null,this.addSlideBtn.addEventListener("click",()=>{this.state.addSlide()}),this.state.subscribe(t=>this.handleStateChange(t)),this.render()}handleStateChange(e){(e==="slideSelect"||e==="slideAdd"||e==="slideDelete"||e==="slideUpdate"||e==="elementAdd"||e==="elementDelete"||e==="elementUpdate"||e==="elementReorder"||e==="slideDuplicate"||e==="slideReorder"||e==="projectImport"||e==="undo"||e==="redo")&&this.render()}render(){this.slideListContainer.innerHTML="",this.state.slides.forEach((e,t)=>{const n=this.createSlideItem(e,t);this.slideListContainer.appendChild(n)})}createSlideItem(e,t){const n=e.id===this.state.currentSlideId,i=document.createElement("div");i.className=`slide-thumb-container ${n?"active":""}`,i.dataset.id=e.id,i.draggable=!0;const s=document.createElement("div");s.className="slide-thumb-label",s.innerText=t+1,i.appendChild(s);const r=document.createElement("div");r.className="slide-thumb-wrapper";const o=document.createElement("div");o.className="slide-thumb-preview",o.style.width=`${v}px`,o.style.height=`${E}px`;const d=160/v;o.style.transform=`scale(${d})`,e.background.type==="color"||e.background.type==="gradient"?o.style.background=e.background.value:e.background.type==="image"&&(o.style.background=`url('${e.background.value}') no-repeat center center`,o.style.backgroundSize="cover"),e.elements.forEach(c=>{const u=document.createElement("div");u.style.position="absolute",u.style.left=`${c.x}px`,u.style.top=`${c.y}px`,u.style.width=`${c.width}px`,u.style.height=`${c.height}px`,u.style.borderRadius=c.style.borderRadius?`${c.style.borderRadius}px`:"0px",c.type==="text"?(u.style.color=c.style.color,u.style.fontSize=`${c.style.fontSize}px`,u.style.fontWeight=c.style.fontWeight,u.style.textAlign=c.style.textAlign,u.innerText=c.content.substring(0,20),u.style.overflow="hidden"):c.type==="image"?(u.style.backgroundColor="#333",u.style.border="2px solid #555"):c.type==="shape"&&(u.style.backgroundColor=c.style.backgroundColor,u.style.border=`${c.style.borderWidth}px ${c.style.borderStyle} ${c.style.borderColor}`),o.appendChild(u)}),r.appendChild(o),i.appendChild(r);const l=document.createElement("div");l.className="slide-thumb-controls";const g=document.createElement("button");g.className="slide-action-btn dup-btn",g.title="スライドを複製",g.innerHTML=`
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+    `,g.addEventListener("click",c=>{c.stopPropagation(),this.state.duplicateSlide(e.id)});const m=document.createElement("button");return m.className="slide-action-btn del-btn",m.title="スライドを削除",m.disabled=this.state.slides.length<=1,m.innerHTML=`
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3 6 5 6 21 6"></polyline>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+      </svg>
+    `,m.addEventListener("click",c=>{c.stopPropagation(),this.state.deleteSlide(e.id)}),l.appendChild(g),l.appendChild(m),i.appendChild(l),i.addEventListener("click",()=>{this.state.selectSlide(e.id)}),i.addEventListener("dragstart",c=>{this.draggedSlideId=e.id,i.classList.add("dragging"),c.dataTransfer.effectAllowed="move"}),i.addEventListener("dragover",c=>{c.preventDefault(),c.dataTransfer.dropEffect="move";const u=i.getBoundingClientRect();c.clientY-u.top<u.height/2?(i.classList.add("drag-over-top"),i.classList.remove("drag-over-bottom")):(i.classList.add("drag-over-bottom"),i.classList.remove("drag-over-top"))}),i.addEventListener("dragleave",()=>{i.classList.remove("drag-over-top","drag-over-bottom")}),i.addEventListener("drop",c=>{c.preventDefault(),i.classList.remove("drag-over-top","drag-over-bottom"),this.draggedSlideId&&this.draggedSlideId!==e.id&&this.state.reorderSlides(this.draggedSlideId,e.id)}),i.addEventListener("dragend",()=>{i.classList.remove("dragging","drag-over-top","drag-over-bottom"),this.draggedSlideId=null}),i}}class ${constructor(e){this.state=e,this.panel=document.getElementById("inspector-panel"),this.slideSection=document.getElementById("slide-properties"),this.elementSection=document.getElementById("element-properties"),this.bgTypeSelect=document.getElementById("bg-type"),this.bgColorInput=document.getElementById("bg-color"),this.bgGradientInput=document.getElementById("bg-gradient"),this.bgImageInput=document.getElementById("bg-image-url"),this.layerFrontBtn=document.getElementById("btn-layer-front"),this.layerBackBtn=document.getElementById("btn-layer-back"),this.deleteElemBtn=document.getElementById("btn-delete-element"),this.textPropsContainer=document.getElementById("text-properties"),this.shapePropsContainer=document.getElementById("shape-properties"),this.imagePropsContainer=document.getElementById("image-properties"),this.state.subscribe(t=>this.handleStateChange(t)),this.setupListeners(),this.render()}setupListeners(){this.bgTypeSelect.addEventListener("change",()=>{const e=this.bgTypeSelect.value;this.toggleBgFields(e);let t="#1e1e24";e==="gradient"?t="linear-gradient(135deg, #667eea 0%, #764ba2 100%)":e==="image"&&(t="https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1200"),this.state.updateSlideBackground({type:e,value:t})}),this.bgColorInput.addEventListener("input",()=>{this.state.updateSlideBackground({type:"color",value:this.bgColorInput.value})}),this.bgGradientInput.addEventListener("change",()=>{this.state.updateSlideBackground({type:"gradient",value:this.bgGradientInput.value})}),this.bgImageInput.addEventListener("change",()=>{this.state.updateSlideBackground({type:"image",value:this.bgImageInput.value})}),this.layerFrontBtn.addEventListener("click",()=>{const e=this.state.selectedElementId;e&&this.state.bringToFront(e)}),this.layerBackBtn.addEventListener("click",()=>{const e=this.state.selectedElementId;e&&this.state.sendToBack(e)}),this.deleteElemBtn.addEventListener("click",()=>{const e=this.state.selectedElementId;e&&this.state.deleteElement(e)})}toggleBgFields(e){document.getElementById("bg-color-group").style.display=e==="color"?"block":"none",document.getElementById("bg-gradient-group").style.display=e==="gradient"?"block":"none",document.getElementById("bg-image-group").style.display=e==="image"?"block":"none"}handleStateChange(e){(e==="elementSelect"||e==="slideSelect"||e==="elementUpdate"||e==="slideUpdate"||e==="undo"||e==="redo")&&this.render()}render(){const e=this.state.getSelectedElement(),t=this.state.getCurrentSlide();e?(this.slideSection.style.display="none",this.elementSection.style.display="block",this.renderElementProperties(e)):(this.slideSection.style.display="block",this.elementSection.style.display="none",t&&this.renderSlideProperties(t))}renderSlideProperties(e){const t=e.background;this.bgTypeSelect.value=t.type,this.toggleBgFields(t.type),t.type==="color"?this.bgColorInput.value=t.value:t.type==="gradient"?this.bgGradientInput.value=t.value:t.type==="image"&&(this.bgImageInput.value=t.value)}renderElementProperties(e){this.textPropsContainer.style.display="none",this.shapePropsContainer.style.display="none",this.imagePropsContainer.style.display="none",e.type==="text"?(this.textPropsContainer.style.display="block",this.setupTextInspector(e)):e.type==="shape"?(this.shapePropsContainer.style.display="block",this.setupShapeInspector(e)):e.type==="image"&&(this.imagePropsContainer.style.display="block",this.setupImageInspector(e))}bindInput(e,t,n,i=r=>r,s="input"){const r=document.getElementById(t),o=r.cloneNode(!0);return r.parentNode.replaceChild(o,r),o.addEventListener(s,()=>{const d=i(o.value);this.state.updateElement(e,{style:{[n]:d}})}),o}bindToggleBtn(e,t,n,i,s){const r=document.getElementById(t),o=r.cloneNode(!0);r.parentNode.replaceChild(o,r),element.style[n]===i?o.classList.add("active"):o.classList.remove("active"),o.addEventListener("click",()=>{const g=o.classList.contains("active")?s:i;this.state.updateElement(e,{style:{[n]:g}})})}setupTextInspector(e){const t=e.id,n=e.style,i=this.bindInput(t,"text-font-family","fontFamily",void 0,"change");i.value=n.fontFamily||"Inter, sans-serif";const s=this.bindInput(t,"text-font-size","fontSize",l=>parseInt(l)||12);s.value=n.fontSize;const r=this.bindInput(t,"text-color","color");r.value=n.color;const o=this.bindInput(t,"text-bg-color","backgroundColor");o.value=n.backgroundColor||"transparent",this.setupToggleStyleButton(t,"btn-text-bold","fontWeight","bold","normal",n.fontWeight==="bold"),this.setupToggleStyleButton(t,"btn-text-italic","fontStyle","italic","normal",n.fontStyle==="italic"),this.setupToggleStyleButton(t,"btn-text-underline","textDecoration","underline","none",n.textDecoration==="underline"),["left","center","right","justify"].forEach(l=>{const g=document.getElementById(`btn-text-align-${l}`),m=g.cloneNode(!0);g.parentNode.replaceChild(m,g),n.textAlign===l?m.classList.add("active"):m.classList.remove("active"),m.addEventListener("click",()=>{this.state.updateElement(t,{style:{textAlign:l}})})})}setupToggleStyleButton(e,t,n,i,s,r){const o=document.getElementById(t),d=o.cloneNode(!0);o.parentNode.replaceChild(d,o),r?d.classList.add("active"):d.classList.remove("active"),d.addEventListener("click",()=>{const l=r?s:i;this.state.updateElement(e,{style:{[n]:l}})})}setupShapeInspector(e){const t=e.id,n=e.style,i=this.bindInput(t,"shape-fill","backgroundColor");i.value=n.backgroundColor;const s=this.bindInput(t,"shape-border-width","borderWidth",l=>parseInt(l)||0);s.value=n.borderWidth||0;const r=this.bindInput(t,"shape-border-color","borderColor");r.value=n.borderColor||"#ffffff";const o=this.bindInput(t,"shape-border-style","borderStyle",void 0,"change");o.value=n.borderStyle||"none";const d=this.bindInput(t,"shape-radius","borderRadius",l=>parseInt(l)||0);d.value=n.borderRadius||0}setupImageInspector(e){const t=e.id,n=e.style,i=document.getElementById("image-url"),s=i.cloneNode(!0);i.parentNode.replaceChild(s,i),s.value=e.content,s.addEventListener("change",()=>{this.state.updateElement(t,{content:s.value})});const r=this.bindInput(t,"image-radius","borderRadius",o=>parseInt(o)||0);r.value=n.borderRadius||0}}class R{constructor(e){this.state=e,this.exportJsonBtn=document.getElementById("btn-export-json"),this.importJsonInput=document.getElementById("input-import-json"),this.exportHtmlBtn=document.getElementById("btn-export-html"),this.exportPdfBtn=document.getElementById("btn-export-pdf"),this.setupListeners()}setupListeners(){this.exportJsonBtn.addEventListener("click",()=>this.exportJSON()),this.exportHtmlBtn.addEventListener("click",()=>this.exportHTML()),this.exportPdfBtn.addEventListener("click",()=>this.exportPDF()),this.importJsonInput.addEventListener("change",e=>{const t=e.target.files[0];if(!t)return;const n=new FileReader;n.onload=i=>{try{const s=JSON.parse(i.target.result),r=this.state.importProject(s);alert(r?"プロジェクトをインポートしました！":"無効なファイル形式です。")}catch(s){console.error(s),alert("JSONファイルの解析に失敗しました。")}this.importJsonInput.value=""},n.readAsText(t)})}exportJSON(){const e={slides:this.state.slides,currentSlideId:this.state.currentSlideId,version:"1.0"},t=JSON.stringify(e,null,2),n=new Blob([t],{type:"application/json"}),i=URL.createObjectURL(n),s=document.createElement("a");s.href=i,s.download=`slidecraft_project_${new Date().toISOString().slice(0,10)}.json`,s.click(),URL.revokeObjectURL(i)}exportHTML(){const t=`<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SlideCraft Presentation</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #111;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+    #presentation-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    #slide-viewport {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      background: #1e1e24;
+      transform-origin: center center;
+      transition: transform 0.1s ease-out;
+    }
+    .slide {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1280px;
+      height: 720px;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.6s;
+    }
+    .slide.active {
+      opacity: 1;
+      visibility: visible;
+    }
+    .slide-element {
+      position: absolute;
+    }
+    .element-inner {
+      width: 100%;
+      height: 100%;
+    }
+    .text-inner {
+      word-wrap: break-word;
+      white-space: pre-wrap;
+    }
+    .shape-triangle {
+      clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+    }
+    
+    /* Navigation overlays */
+    .nav-arrow {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: white;
+      font-size: 24px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.3s, background 0.3s;
+      z-index: 100;
+      user-select: none;
+    }
+    #presentation-container:hover .nav-arrow {
+      opacity: 1;
+    }
+    .nav-arrow:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+    .nav-left { left: 30px; }
+    .nav-right { right: 30px; }
+
+    /* Progress bar */
+    #progress-bar-container {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      z-index: 101;
+    }
+    #progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #6366f1, #a855f7);
+      transition: width 0.3s ease;
+    }
+
+    /* Counter */
+    #slide-counter {
+      position: absolute;
+      bottom: 20px;
+      right: 25px;
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 14px;
+      z-index: 100;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+
+  <div id="presentation-container">
+    <button class="nav-arrow nav-left" id="btn-prev" onclick="prevSlide()">&larr;</button>
+    
+    <div id="slide-viewport">
+      \x3C!-- Slides will be rendered here dynamically -->
+    </div>
+    
+    <button class="nav-arrow nav-right" id="btn-next" onclick="nextSlide()">&rarr;</button>
+
+    <div id="progress-bar-container">
+      <div id="progress-bar"></div>
+    </div>
+    <div id="slide-counter"><span id="curr-num">1</span> / <span id="total-num">1</span></div>
+  </div>
+
+  <script>
+    const slides = ${JSON.stringify(this.state.slides)};
+    let currentIdx = 0;
+    
+    const viewport = document.getElementById('slide-viewport');
+    const prevBtn = document.getElementById('btn-prev');
+    const nextBtn = document.getElementById('btn-next');
+    const currNum = document.getElementById('curr-num');
+    const totalNum = document.getElementById('total-num');
+    const progressBar = document.getElementById('progress-bar');
+    
+    // Auto scaling
+    function resizeViewport() {
+      const winW = window.innerWidth;
+      const winH = window.innerHeight;
+      
+      const targetW = 1280;
+      const targetH = 720;
+      
+      const scaleX = winW / targetW;
+      const scaleY = winH / targetH;
+      
+      const scale = Math.min(scaleX, scaleY) * 0.95; // 95% of screen size to fit nicely
+      
+      viewport.style.transform = \`scale(\${scale})\`;
+    }
+    
+    window.addEventListener('resize', resizeViewport);
+    
+    // Create elements
+    function createSlideDom(slide, idx) {
+      const slideDom = document.createElement('div');
+      slideDom.className = 'slide' + (idx === 0 ? ' active' : '');
+      slideDom.dataset.index = idx;
+      
+      // Apply background
+      if (slide.background.type === 'color') {
+        slideDom.style.background = slide.background.value;
+      } else if (slide.background.type === 'gradient') {
+        slideDom.style.background = slide.background.value;
+      } else if (slide.background.type === 'image') {
+        slideDom.style.background = \`url('\${slide.background.value}') no-repeat center center\`;
+        slideDom.style.backgroundSize = 'cover';
+      }
+      
+      // Render components
+      slide.elements.forEach(elem => {
+        const elemDom = document.createElement('div');
+        elemDom.className = 'slide-element';
+        elemDom.style.left = \`\${elem.x}px\`;
+        elemDom.style.top = \`\${elem.y}px\`;
+        elemDom.style.width = \`\${elem.width}px\`;
+        elemDom.style.height = \`\${elem.height}px\`;
+        if (elem.zIndex) elemDom.style.zIndex = elem.zIndex;
+        
+        const inner = document.createElement('div');
+        inner.className = 'element-inner';
+        
+        if (elem.type === 'text') {
+          inner.className += ' text-inner';
+          inner.innerText = elem.content;
+          
+          // Apply text styles
+          const style = elem.style;
+          inner.style.fontSize = \`\${style.fontSize}px\`;
+          inner.style.color = style.color;
+          inner.style.fontWeight = style.fontWeight;
+          inner.style.fontStyle = style.fontStyle;
+          inner.style.textDecoration = style.textDecoration;
+          inner.style.textAlign = style.textAlign;
+          inner.style.fontFamily = style.fontFamily;
+          if (style.backgroundColor) inner.style.backgroundColor = style.backgroundColor;
+        } else if (elem.type === 'image') {
+          const img = document.createElement('img');
+          img.src = elem.content;
+          img.style.width = '100%';
+          img.style.height = '100%';
+          img.style.objectFit = 'cover';
+          if (elem.style.borderRadius) img.style.borderRadius = \`\${elem.style.borderRadius}px\`;
+          inner.appendChild(img);
+          
+          if (elem.style.borderWidth) {
+            inner.style.border = \`\${elem.style.borderWidth}px \${elem.style.borderStyle} \${elem.style.borderColor}\`;
+          }
+          if (elem.style.borderRadius) inner.style.borderRadius = \`\${elem.style.borderRadius}px\`;
+        } else if (elem.type === 'shape') {
+          const shapeType = elem.content;
+          inner.className += \` shape-\${shapeType}\`;
+          inner.style.backgroundColor = elem.style.backgroundColor;
+          if (elem.style.borderRadius) inner.style.borderRadius = \`\${elem.style.borderRadius}px\`;
+          
+          if (elem.style.borderWidth) {
+            inner.style.border = \`\${elem.style.borderWidth}px \${elem.style.borderStyle} \${elem.style.borderColor}\`;
+          }
+          if (shapeType === 'triangle') {
+            inner.style.clipPath = 'polygon(50% 0%, 0% 100%, 100% 100%)';
+            inner.style.backgroundColor = elem.style.backgroundColor;
+            inner.style.border = 'none';
+          }
+        }
+        
+        elemDom.appendChild(inner);
+        slideDom.appendChild(elemDom);
+      });
+      
+      return slideDom;
+    }
+    
+    function init() {
+      slides.forEach((slide, idx) => {
+        const dom = createSlideDom(slide, idx);
+        viewport.appendChild(dom);
+      });
+      
+      totalNum.innerText = slides.length;
+      updateUI();
+      resizeViewport();
+    }
+    
+    function updateUI() {
+      const slideElements = document.querySelectorAll('.slide');
+      slideElements.forEach((s, idx) => {
+        if (idx === currentIdx) {
+          s.classList.add('active');
+        } else {
+          s.classList.remove('active');
+        }
+      });
+      
+      currNum.innerText = currentIdx + 1;
+      
+      // Update progress
+      const progress = slides.length > 1 ? (currentIdx / (slides.length - 1)) * 100 : 100;
+      progressBar.style.width = \`\${progress}%\`;
+      
+      // Toggle nav arrow visibility limits
+      prevBtn.style.visibility = currentIdx === 0 ? 'hidden' : 'visible';
+      nextBtn.style.visibility = currentIdx === slides.length - 1 ? 'hidden' : 'visible';
+    }
+    
+    function nextSlide() {
+      if (currentIdx < slides.length - 1) {
+        currentIdx++;
+        updateUI();
+      }
+    }
+    
+    function prevSlide() {
+      if (currentIdx > 0) {
+        currentIdx--;
+        updateUI();
+      }
+    }
+    
+    // Keyboard and click support
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {
+        nextSlide();
+      } else if (e.key === 'ArrowLeft' || e.key === 'Backspace') {
+        prevSlide();
+      }
+    });
+
+    // Double click to toggle full screen
+    document.addEventListener('dblclick', () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen();
+      } else {
+        document.exitFullscreen();
+      }
+    });
+    
+    init();
+  <\/script>
+</body>
+</html>`,n=new Blob([t],{type:"text/html"}),i=URL.createObjectURL(n),s=document.createElement("a");s.href=i,s.download=`slidecraft_presentation_${new Date().toISOString().slice(0,10)}.html`,s.click(),URL.revokeObjectURL(i)}exportPDF(){const e=document.getElementById("print-container");e&&(e.innerHTML="",this.state.slides.forEach(t=>{const n=document.createElement("div");n.className="print-page";const i=document.createElement("div");i.className="print-slide-content",t.background.type==="color"||t.background.type==="gradient"?i.style.background=t.background.value:t.background.type==="image"&&(i.style.background=`url('${t.background.value}') no-repeat center center`,i.style.backgroundSize="cover"),t.elements.forEach(s=>{const r=document.createElement("div");r.className="slide-element",r.style.left=`${s.x}px`,r.style.top=`${s.y}px`,r.style.width=`${s.width}px`,r.style.height=`${s.height}px`,s.zIndex&&(r.style.zIndex=s.zIndex);const o=document.createElement("div");if(o.className="element-inner",s.type==="text"){o.className+=" text-inner",o.innerText=s.content;const d=s.style;o.style.fontSize=`${d.fontSize}px`,o.style.color=d.color,o.style.fontWeight=d.fontWeight,o.style.fontStyle=d.fontStyle,o.style.textDecoration=d.textDecoration,o.style.textAlign=d.textAlign,o.style.fontFamily=d.fontFamily,d.backgroundColor&&(o.style.backgroundColor=d.backgroundColor)}else if(s.type==="image"){const d=document.createElement("img");d.src=s.content,d.style.width="100%",d.style.height="100%",d.style.objectFit="cover",s.style.borderRadius&&(d.style.borderRadius=`${s.style.borderRadius}px`),o.appendChild(d),s.style.borderWidth&&(o.style.border=`${s.style.borderWidth}px ${s.style.borderStyle} ${s.style.borderColor}`),s.style.borderRadius&&(o.style.borderRadius=`${s.style.borderRadius}px`)}else if(s.type==="shape"){const d=s.content;o.className+=` shape-${d}`,o.style.backgroundColor=s.style.backgroundColor,s.style.borderRadius&&(o.style.borderRadius=`${s.style.borderRadius}px`),s.style.borderWidth&&(o.style.border=`${s.style.borderWidth}px ${s.style.borderStyle} ${s.style.borderColor}`),d==="triangle"&&(o.style.clipPath="polygon(50% 0%, 0% 100%, 100% 100%)",o.style.backgroundColor=s.style.backgroundColor,o.style.border="none")}r.appendChild(o),i.appendChild(r)}),n.appendChild(i),e.appendChild(n)}),setTimeout(()=>{window.print(),e.innerHTML=""},600))}}document.addEventListener("DOMContentLoaded",()=>{const a=new T;new L(a),new D(a),new $(a),new R(a),z(a),N(a),document.addEventListener("keydown",e=>{const t=document.activeElement;t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.getAttribute("contenteditable")==="true"||((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"&&(e.preventDefault(),a.undo()),(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="y"&&(e.preventDefault(),a.redo()),(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="c"&&a.getSelectedElement()&&(e.preventDefault(),a.copySelectedElement()),(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="v"&&a.clipboard&&(e.preventDefault(),a.pasteCopiedElement()))}),document.addEventListener("paste",e=>{const t=document.activeElement;if(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.getAttribute("contenteditable")==="true")return;const n=(e.clipboardData||e.clipboardData).items;for(const i of n)if(i.type.indexOf("image")===0){const s=i.getAsFile(),r=new FileReader;r.onload=o=>{a.addElement("image",{url:o.target.result,x:440,y:210,width:400,height:300})},r.readAsDataURL(s),e.preventDefault();break}})});function z(a){const e=document.getElementById("btn-add-text"),t=document.getElementById("btn-add-rect"),n=document.getElementById("btn-add-circle"),i=document.getElementById("btn-add-triangle"),s=document.getElementById("btn-add-image"),r=document.getElementById("input-add-image"),o=document.getElementById("btn-undo"),d=document.getElementById("btn-redo");e.addEventListener("click",()=>{a.addElement("text")}),t.addEventListener("click",()=>{a.addElement("shape",{shapeType:"rect"})}),n.addEventListener("click",()=>{a.addElement("shape",{shapeType:"circle"})}),i.addEventListener("click",()=>{a.addElement("shape",{shapeType:"triangle"})}),s.addEventListener("click",()=>{r.click()}),r.addEventListener("change",g=>{const m=g.target.files[0];if(!m)return;const c=new FileReader;c.onload=u=>{a.addElement("image",{url:u.target.result,x:440,y:210,width:400,height:300}),r.value=""},c.readAsDataURL(m)}),o.addEventListener("click",()=>a.undo()),d.addEventListener("click",()=>a.redo()),a.subscribe(()=>{o.disabled=a.undoStack.length===0,d.disabled=a.redoStack.length===0}),o.disabled=a.undoStack.length===0,d.disabled=a.redoStack.length===0;const l=document.getElementById("btn-new-project");l&&l.addEventListener("click",()=>{confirm("現在のスライドがすべて消去され、初期状態に戻ります。よろしいですか？")&&a.newProject()})}function N(a){const e=document.getElementById("presentation-overlay"),t=document.getElementById("presentation-viewport"),n=document.getElementById("btn-start-presentation"),i=document.getElementById("pres-btn-prev"),s=document.getElementById("pres-btn-next"),r=document.getElementById("pres-btn-exit"),o=document.getElementById("pres-progress-bar"),d=document.getElementById("pres-counter");let l=0,g=!1;function m(){if(!g)return;const p=window.innerWidth,x=window.innerHeight,b=p/v,h=x/E,S=Math.min(b,h)*.95;t.style.transform=`scale(${S})`}window.addEventListener("resize",m);function c(){t.innerHTML="",a.slides.forEach((p,x)=>{const b=document.createElement("div");b.className="slide"+(x===l?" active":""),b.style.width=`${v}px`,b.style.height=`${E}px`,p.background.type==="color"||p.background.type==="gradient"?b.style.background=p.background.value:p.background.type==="image"&&(b.style.background=`url('${p.background.value}') no-repeat center center`,b.style.backgroundSize="cover"),p.elements.forEach(h=>{const S=document.createElement("div");S.className="slide-element",S.style.left=`${h.x}px`,S.style.top=`${h.y}px`,S.style.width=`${h.width}px`,S.style.height=`${h.height}px`,h.zIndex&&(S.style.zIndex=h.zIndex);const y=document.createElement("div");if(y.className="element-inner",h.type==="text"){y.className+=" text-inner",y.innerText=h.content;const f=h.style;y.style.fontSize=`${f.fontSize}px`,y.style.color=f.color,y.style.fontWeight=f.fontWeight,y.style.fontStyle=f.fontStyle,y.style.textDecoration=f.textDecoration,y.style.textAlign=f.textAlign,y.style.fontFamily=f.fontFamily,f.backgroundColor&&(y.style.backgroundColor=f.backgroundColor)}else if(h.type==="image"){const f=document.createElement("img");f.src=h.content,f.style.width="100%",f.style.height="100%",f.style.objectFit="cover",h.style.borderRadius&&(f.style.borderRadius=`${h.style.borderRadius}px`),y.appendChild(f),h.style.borderWidth&&(y.style.border=`${h.style.borderWidth}px ${h.style.borderStyle} ${h.style.borderColor}`),h.style.borderRadius&&(y.style.borderRadius=`${h.style.borderRadius}px`)}else if(h.type==="shape"){const f=h.content;y.className+=` shape-${f}`,y.style.backgroundColor=h.style.backgroundColor,h.style.borderRadius&&(y.style.borderRadius=`${h.style.borderRadius}px`),h.style.borderWidth&&(y.style.border=`${h.style.borderWidth}px ${h.style.borderStyle} ${h.style.borderColor}`),f==="triangle"&&(y.style.clipPath="polygon(50% 0%, 0% 100%, 100% 100%)",y.style.backgroundColor=h.style.backgroundColor,y.style.border="none")}S.appendChild(y),b.appendChild(S)}),t.appendChild(b)})}function u(){t.querySelectorAll(".slide").forEach((h,S)=>{S===l?h.classList.add("active"):h.classList.remove("active")});const x=a.slides.length,b=x>1?l/(x-1)*100:100;o.style.width=`${b}%`,d.innerText=`${l+1} / ${x}`,i.style.visibility=l===0?"hidden":"visible",s.style.visibility=l===x-1?"hidden":"visible"}function k(){const p=a.getCurrentSlide(),x=a.slides.findIndex(b=>b.id===(p==null?void 0:p.id));l=x!==-1?x:0,g=!0,e.style.display="flex",c(),u(),m(),e.requestFullscreen&&e.requestFullscreen().catch(b=>{console.warn("Fullscreen request failed:",b)})}function I(){g=!1,e.style.display="none",document.fullscreenElement&&document.exitFullscreen().catch(p=>console.warn(p)),a.slides[l]&&a.selectSlide(a.slides[l].id)}function w(){l<a.slides.length-1&&(l++,u())}function C(){l>0&&(l--,u())}n.addEventListener("click",k),i.addEventListener("click",C),s.addEventListener("click",w),r.addEventListener("click",I),e.addEventListener("dblclick",p=>{(p.target===e||p.target===t)&&I()}),document.addEventListener("keydown",p=>{g&&(p.key==="ArrowRight"||p.key===" "||p.key==="Enter"?(p.preventDefault(),w()):p.key==="ArrowLeft"||p.key==="Backspace"?(p.preventDefault(),C()):p.key==="Escape"&&(p.preventDefault(),I()))})}</script>
+  <style rel="stylesheet" crossorigin>:root{--bg-base: #0a0a0c;--bg-panel: rgba(22, 22, 28, .75);--bg-panel-solid: #16161c;--border-color: rgba(255, 255, 255, .08);--border-color-focus: rgba(99, 102, 241, .5);--text-primary: #f3f4f6;--text-secondary: #9ca3af;--text-muted: #6b7280;--primary: #6366f1;--primary-hover: #4f46e5;--primary-glow: rgba(99, 102, 241, .35);--danger: #ef4444;--danger-hover: #dc2626;--slide-shadow: 0 25px 60px -15px rgba(0, 0, 0, .6);--selection-color: #6366f1;--transition-smooth: all .25s cubic-bezier(.4, 0, .2, 1);--glass-filter: blur(16px) saturate(180%)}*{box-sizing:border-box;margin:0;padding:0}body,html{width:100%;height:100%;overflow:hidden;background-color:var(--bg-base);color:var(--text-primary);font-family:Inter,system-ui,-apple-system,sans-serif;-webkit-user-select:none;user-select:none}button,input,select,textarea{font-family:inherit;color:inherit}#app{display:flex;flex-direction:column;width:100vw;height:100vh}.editor-header{height:64px;background-color:var(--bg-panel);-webkit-backdrop-filter:var(--glass-filter);backdrop-filter:var(--glass-filter);border-bottom:1px solid var(--border-color);display:flex;align-items:center;padding:0 20px;gap:30px;z-index:10}.header-logo{display:flex;align-items:center;gap:8px}.header-logo h1{font-size:20px;font-weight:700;font-family:Outfit,sans-serif;background:linear-gradient(135deg,#a5b4fc,#6366f1);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.logo-icon{font-size:20px}.toolbar-section{display:flex;flex-direction:column;gap:4px}.section-label{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;font-weight:600}.btn-group{display:flex;background-color:#ffffff0a;border:1px solid var(--border-color);border-radius:8px;padding:2px}.tool-btn{background:transparent;border:none;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:500;display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-secondary);transition:var(--transition-smooth)}.tool-btn:hover{background-color:#ffffff14;color:var(--text-primary)}.tool-btn.active{background-color:var(--primary);color:#fff}.tool-btn svg{stroke-width:2.2px}.tool-btn.compact{padding:6px}.tool-btn.secondary{border:1px solid var(--border-color);background-color:#ffffff05}.tool-btn.secondary:hover{background-color:#ffffff0f}.tool-btn.primary{background:linear-gradient(135deg,#818cf8,#6366f1);color:#fff;border:none}.tool-btn.primary:hover{transform:translateY(-1px)}.tool-btn.glow{box-shadow:0 0 12px var(--primary-glow)}.project-controls{flex-direction:row;align-items:flex-end;gap:8px}.presentation-trigger{margin-left:auto}.action-btn-main{background:linear-gradient(135deg,#6366f1,#a855f7);border:none;border-radius:8px;padding:8px 16px;font-size:14px;font-weight:600;color:#fff;display:flex;align-items:center;gap:8px;cursor:pointer;transition:var(--transition-smooth);box-shadow:0 4px 15px #6366f14d}.action-btn-main:hover{transform:translateY(-1px);box-shadow:0 6px 20px #6366f173}.editor-workspace{flex:1;display:grid;grid-template-columns:240px 1fr 300px;height:calc(100vh - 64px);overflow:hidden}.sidebar-left{background-color:var(--bg-panel);-webkit-backdrop-filter:var(--glass-filter);backdrop-filter:var(--glass-filter);border-right:1px solid var(--border-color);display:flex;flex-direction:column;overflow:hidden}.sidebar-title{padding:16px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border-color)}.sidebar-title h2{font-size:14px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em}.icon-btn-add{background:#ffffff0d;border:1px solid var(--border-color);border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:var(--transition-smooth)}.icon-btn-add:hover{background-color:var(--primary);color:#fff;border-color:var(--primary)}.slide-list-scrollbar{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:16px}.slide-list-scrollbar::-webkit-scrollbar,.sidebar-right::-webkit-scrollbar{width:6px}.slide-list-scrollbar::-webkit-scrollbar-thumb,.sidebar-right::-webkit-scrollbar-thumb{background:#ffffff1a;border-radius:3px}.slide-list-scrollbar::-webkit-scrollbar-thumb:hover,.sidebar-right::-webkit-scrollbar-thumb:hover{background:#fff3}.slide-thumb-container{position:relative;border-radius:8px;padding:6px;background:#ffffff05;border:1px solid var(--border-color);cursor:pointer;transition:var(--transition-smooth)}.slide-thumb-container:hover{background:#ffffff0a;border-color:#ffffff26}.slide-thumb-container.active{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary),0 0 12px var(--primary-glow);background:#6366f10d}.slide-thumb-label{font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:4px}.slide-thumb-container.active .slide-thumb-label{color:#a5b4fc}.slide-thumb-wrapper{width:100%;aspect-ratio:16/9;border-radius:4px;overflow:hidden;position:relative;background-color:#1e1e24;border:1px solid rgba(255,255,255,.05)}.slide-thumb-preview{position:absolute;top:0;left:0;transform-origin:top left;pointer-events:none}.slide-thumb-controls{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0;transition:opacity .2s ease}.slide-thumb-container:hover .slide-thumb-controls{opacity:1}.slide-action-btn{width:24px;height:24px;border-radius:4px;background:#0f0f14d9;border:1px solid var(--border-color);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:var(--transition-smooth)}.slide-action-btn:hover{background:var(--primary);color:#fff;border-color:var(--primary)}.slide-action-btn.del-btn:hover{background:var(--danger);color:#fff;border-color:var(--danger)}.slide-action-btn:disabled{opacity:.3;cursor:not-allowed}.slide-thumb-container.dragging{opacity:.4;border:1px dashed var(--primary)}.slide-thumb-container.drag-over-top{border-top:2px solid var(--primary)}.slide-thumb-container.drag-over-bottom{border-bottom:2px solid var(--primary)}.canvas-viewport{background-color:var(--bg-base);background-image:radial-gradient(rgba(255,255,255,.03) 1px,transparent 0);background-size:24px 24px;display:flex;align-items:center;justify-content:center;padding:40px;overflow:hidden;position:relative}#canvas-wrapper{position:relative;box-shadow:var(--slide-shadow);border:1px solid rgba(255,255,255,.12);border-radius:4px;overflow:hidden;display:flex;justify-content:center;align-items:center;flex-shrink:0}.slide-canvas-workspace{background-color:#1e1e24;position:absolute;top:0;left:0;transform-origin:top left}.slide-element{position:absolute;cursor:move}.element-inner{width:100%;height:100%;display:flex;align-items:center;-webkit-user-select:none;user-select:none}.text-inner{padding:4px;outline:none;word-wrap:break-word;white-space:pre-wrap;display:block}.text-inner[contenteditable=true]{cursor:text;-webkit-user-select:text;user-select:text;background-color:#6366f11a;box-shadow:0 0 0 1px var(--primary)}.shape-triangle{clip-path:polygon(50% 0%,0% 100%,100% 100%)}.selection-outline{position:absolute;top:-3px;left:-3px;right:-3px;bottom:-3px;border:2px solid var(--primary);pointer-events:none;box-shadow:0 0 8px #6366f14d;z-index:1000}.resize-handle{position:absolute;width:8px;height:8px;background-color:#fff;border:2px solid var(--primary);border-radius:50%;pointer-events:auto;z-index:1001}.handle-nw{top:-4px;left:-4px;cursor:nwse-resize}.handle-n{top:-4px;left:calc(50% - 4px);cursor:ns-resize}.handle-ne{top:-4px;right:-4px;cursor:nesw-resize}.handle-e{top:calc(50% - 4px);right:-4px;cursor:ew-resize}.handle-se{bottom:-4px;right:-4px;cursor:nwse-resize}.handle-s{bottom:-4px;left:calc(50% - 4px);cursor:ns-resize}.handle-sw{bottom:-4px;left:-4px;cursor:nesw-resize}.handle-w{top:calc(50% - 4px);left:-4px;cursor:ew-resize}.sidebar-right{background-color:var(--bg-panel);-webkit-backdrop-filter:var(--glass-filter);backdrop-filter:var(--glass-filter);border-left:1px solid var(--border-color);padding:20px;overflow-y:auto;z-index:10}.inspector-section h3{font-size:14px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:20px;padding-bottom:8px;border-bottom:1px solid var(--border-color)}.prop-group{margin-bottom:16px}.prop-group label{display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;font-weight:500}.prop-row{display:flex;gap:12px}.width-50{width:50%}.form-select,.form-input,.form-textarea{width:100%;background-color:#ffffff0a;border:1px solid var(--border-color);border-radius:6px;padding:8px 12px;font-size:13px;color:var(--text-primary);transition:var(--transition-smooth);outline:none}.form-select:focus,.form-input:focus,.form-textarea:focus{border-color:var(--primary);background-color:#ffffff0f;box-shadow:0 0 0 1px var(--primary-glow)}.color-picker-input{-webkit-appearance:none;border:1px solid var(--border-color);border-radius:6px;width:100%;height:36px;cursor:pointer;background:none}.color-picker-input::-webkit-color-swatch-wrapper{padding:0}.color-picker-input::-webkit-color-swatch{border:none;border-radius:5px}.form-range{width:100%;accent-color:var(--primary)}.btn-toggle-group{display:flex;background-color:#ffffff0a;border:1px solid var(--border-color);border-radius:6px;padding:2px}.toggle-btn{flex:1;background:transparent;border:none;border-radius:4px;padding:6px;cursor:pointer;color:var(--text-secondary);font-size:13px;display:flex;align-items:center;justify-content:center;transition:var(--transition-smooth)}.toggle-btn:hover{background-color:#ffffff0f;color:var(--text-primary)}.toggle-btn.active{background-color:var(--primary);color:#fff}.flex-4 .toggle-btn{flex-basis:25%}.btn-row{display:flex;gap:8px}.action-btn{border:none;border-radius:6px;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:var(--transition-smooth)}.action-btn.secondary{background-color:#ffffff0d;border:1px solid var(--border-color);color:var(--text-primary)}.action-btn.secondary:hover{background-color:#ffffff1a}.action-btn.danger{width:100%;background-color:#ef44441a;border:1px solid rgba(239,68,68,.2);color:var(--danger);margin-top:24px}.action-btn.danger:hover{background-color:var(--danger);color:#fff;border-color:var(--danger);box-shadow:0 4px 12px #ef444433}.element-actions-section{margin-top:30px;border-top:1px solid var(--border-color);padding-top:20px}#presentation-overlay{position:fixed;top:0;left:0;width:100vw;height:100vh;background-color:#0c0c0e;z-index:10000;display:flex;flex-direction:column;justify-content:center;align-items:center}#presentation-viewport{position:relative;width:1280px;height:720px;background-color:#1e1e24;box-shadow:0 30px 70px #000c;transform-origin:center center;overflow:hidden}#presentation-viewport .slide{position:absolute;top:0;left:0;width:1280px;height:720px;opacity:0;visibility:hidden;transition:opacity .5s cubic-bezier(.4,0,.2,1),visibility .5s}#presentation-viewport .slide.active{opacity:1;visibility:visible}#presentation-viewport .slide-element{position:absolute}#presentation-controls{position:absolute;bottom:24px;display:flex;align-items:center;gap:16px;background:#121216d9;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border:1px solid var(--border-color);border-radius:9999px;padding:8px 16px;box-shadow:0 10px 30px #00000080;z-index:10002;opacity:.1;transition:opacity .3s ease}#presentation-overlay:hover #presentation-controls{opacity:1}.pres-control-btn{background:#ffffff0d;border:1px solid var(--border-color);border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;transition:var(--transition-smooth)}.pres-control-btn:hover{background-color:var(--primary);border-color:var(--primary)}.pres-control-btn.red:hover{background-color:var(--danger);border-color:var(--danger)}#pres-progress-container{width:150px;height:4px;background:#ffffff1a;border-radius:2px;overflow:hidden}#pres-progress-bar{height:100%;width:0%;background:linear-gradient(90deg,var(--primary),#a855f7);transition:width .3s ease}#pres-counter{color:var(--text-secondary);font-size:13px;font-weight:500;min-width:40px;text-align:center}@media print{@page{size:A4 landscape;margin:0}html,body{height:auto!important;overflow:visible!important;background-color:#fff!important}#app{display:none!important}#print-container{display:block!important;height:auto!important;overflow:visible!important;background-color:#fff}.print-page{width:297mm;height:210mm;page-break-after:always;page-break-inside:avoid;position:relative;overflow:hidden;background-color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}.print-slide-content{position:absolute;width:1280px;height:720px;top:21.5mm;left:0;transform:scale(.877);transform-origin:top left;box-sizing:border-box;border:1px solid rgba(128,128,128,.45)}}</style>
+</head>
+<body>
+
+  <div id="app">
+    <!-- Header / Toolbar -->
+    <header class="editor-header">
+      <div class="header-logo">
+        <span class="logo-icon">✨</span>
+        <h1>SlideCraft</h1>
+      </div>
+      
+      <!-- Insert controls -->
+      <div class="toolbar-section">
+        <span class="section-label">追加</span>
+        <div class="btn-group">
+          <button id="btn-add-text" class="tool-btn" title="テキストボックスを追加">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+            <span>テキスト</span>
+          </button>
+          
+          <button id="btn-add-rect" class="tool-btn" title="長方形を追加">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+            <span>長方形</span>
+          </button>
+          
+          <button id="btn-add-circle" class="tool-btn" title="円を追加">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>
+            <span>円</span>
+          </button>
+          
+          <button id="btn-add-triangle" class="tool-btn" title="三角形を追加">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 22 2 22"/></svg>
+            <span>三角形</span>
+          </button>
+
+          <button id="btn-add-image" class="tool-btn" title="画像を追加">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            <span>画像</span>
+          </button>
+          <input type="file" id="input-add-image" accept="image/*" style="display:none">
+        </div>
+      </div>
+
+      <!-- History controls -->
+      <div class="toolbar-section">
+        <span class="section-label">編集</span>
+        <div class="btn-group">
+          <button id="btn-undo" class="tool-btn compact" title="元に戻す (Ctrl+Z)">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+          </button>
+          <button id="btn-redo" class="tool-btn compact" title="やり直し (Ctrl+Y)">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Project options -->
+      <div class="toolbar-section project-controls">
+        <button id="btn-new-project" class="tool-btn secondary" title="スライドをすべてクリアして新規作成">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+          <span>新規作成</span>
+        </button>
+        <button id="btn-export-json" class="tool-btn secondary" title="編集データをJSONで保存">
+          <span>保存 (JSON)</span>
+        </button>
+        <button id="btn-import-trigger" class="tool-btn secondary" title="JSONデータを読み込む" onclick="document.getElementById('input-import-json').click()">
+          <span>読込 (JSON)</span>
+        </button>
+        <input type="file" id="input-import-json" accept=".json" style="display:none">
+        
+        <button id="btn-export-html" class="tool-btn primary glow" title="プレゼン用HTMLをダウンロード">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>HTML出力</span>
+        </button>
+        <button id="btn-export-pdf" class="tool-btn primary glow" title="スライドをPDFとして印刷・保存">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/><rect x="6" y="2" width="12" height="6"/></svg>
+          <span>PDF出力</span>
+        </button>
+      </div>
+
+      <div class="presentation-trigger">
+        <button id="btn-start-presentation" class="action-btn-main">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          <span>スライドショー</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Workspace Container -->
+    <div class="editor-workspace">
+      <!-- Left sidebar: Slide Navigator -->
+      <aside class="sidebar-left">
+        <div class="sidebar-title">
+          <h2>スライド</h2>
+          <button id="add-slide-btn" class="icon-btn-add" title="スライドを追加">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+        <div id="slide-list" class="slide-list-scrollbar">
+          <!-- Thumbnails loaded by sidebar.js -->
+        </div>
+      </aside>
+
+      <!-- Center area: Slide Canvas -->
+      <main id="canvas-container" class="canvas-viewport">
+        <div id="canvas-wrapper">
+          <div id="slide-canvas" class="slide-canvas-workspace">
+            <!-- Components loaded here -->
+          </div>
+        </div>
+      </main>
+
+      <!-- Right sidebar: Inspector / Properties -->
+      <aside id="inspector-panel" class="sidebar-right">
+        <!-- 1. Slide general properties (Shown when NO element is selected) -->
+        <section id="slide-properties" class="inspector-section">
+          <h3>スライド設定</h3>
+          
+          <div class="prop-group">
+            <label for="bg-type">背景の種類</label>
+            <select id="bg-type" class="form-select">
+              <option value="color">単色</option>
+              <option value="gradient">グラデーション</option>
+              <option value="image">画像URL</option>
+            </select>
+          </div>
+
+          <div id="bg-color-group" class="prop-group">
+            <label for="bg-color">背景色</label>
+            <input type="color" id="bg-color" class="color-picker-input">
+          </div>
+
+          <div id="bg-gradient-group" class="prop-group" style="display:none">
+            <label for="bg-gradient">グラデーションCSS</label>
+            <textarea id="bg-gradient" class="form-textarea" rows="3" placeholder="linear-gradient(135deg, #667eea, #764ba2)"></textarea>
+          </div>
+
+          <div id="bg-image-group" class="prop-group" style="display:none">
+            <label for="bg-image-url">背景画像URL</label>
+            <input type="text" id="bg-image-url" class="form-input" placeholder="https://example.com/bg.jpg">
+          </div>
+        </section>
+
+        <!-- 2. Selected element properties (Shown when an element is selected) -->
+        <section id="element-properties" class="inspector-section" style="display:none">
+          <h3>要素のプロパティ</h3>
+
+          <!-- Text properties -->
+          <div id="text-properties" class="prop-sub-section">
+            <div class="prop-group">
+              <label for="text-font-family">フォント</label>
+              <select id="text-font-family" class="form-select">
+                <option value="Inter, sans-serif">Inter (Sans-serif)</option>
+                <option value="'Outfit', sans-serif">Outfit</option>
+                <option value="'Times New Roman', serif">Times New Roman (Serif)</option>
+                <option value="'Courier New', monospace">Courier New (Monospace)</option>
+                <option value="'Hiragino Kaku Gothic ProN', Meiryo, sans-serif">ヒラギノ角ゴ / メイリオ</option>
+                <option value="'Hiragino Mincho ProN', 'MS Mincho', serif">ヒラギノ明朝 / MS明朝</option>
+              </select>
+            </div>
+
+            <div class="prop-row">
+              <div class="prop-group width-50">
+                <label for="text-font-size">サイズ (px)</label>
+                <input type="number" id="text-font-size" class="form-input" min="8" max="200" value="32">
+              </div>
+              <div class="prop-group width-50">
+                <label for="text-color">文字色</label>
+                <input type="color" id="text-color" class="color-picker-input">
+              </div>
+            </div>
+
+            <div class="prop-group">
+              <label for="text-bg-color">文字背景色</label>
+              <input type="color" id="text-bg-color" class="color-picker-input">
+            </div>
+
+            <div class="prop-group">
+              <label>装飾</label>
+              <div class="btn-toggle-group">
+                <button id="btn-text-bold" class="toggle-btn" title="太字"><b>B</b></button>
+                <button id="btn-text-italic" class="toggle-btn" title="斜体"><i>I</i></button>
+                <button id="btn-text-underline" class="toggle-btn" title="下線"><u>U</u></button>
+              </div>
+            </div>
+
+            <div class="prop-group">
+              <label>配置</label>
+              <div class="btn-toggle-group flex-4">
+                <button id="btn-text-align-left" class="toggle-btn" title="左揃え">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>
+                </button>
+                <button id="btn-text-align-center" class="toggle-btn" title="中央揃え">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="10" x2="6" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="18" y1="18" x2="6" y2="18"/></svg>
+                </button>
+                <button id="btn-text-align-right" class="toggle-btn" title="右揃え">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="7" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="7" y2="18"/></svg>
+                </button>
+                <button id="btn-text-align-justify" class="toggle-btn" title="両端揃え">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="3" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Shape properties -->
+          <div id="shape-properties" class="prop-sub-section" style="display:none">
+            <div class="prop-group">
+              <label for="shape-fill">塗りつぶし色</label>
+              <input type="color" id="shape-fill" class="color-picker-input">
+            </div>
+
+            <div class="prop-row">
+              <div class="prop-group width-50">
+                <label for="shape-border-width">枠線の太さ</label>
+                <input type="number" id="shape-border-width" class="form-input" min="0" max="30" value="2">
+              </div>
+              <div class="prop-group width-50">
+                <label for="shape-border-color">枠線の色</label>
+                <input type="color" id="shape-border-color" class="color-picker-input">
+              </div>
+            </div>
+
+            <div class="prop-group">
+              <label for="shape-border-style">枠線の種類</label>
+              <select id="shape-border-style" class="form-select">
+                <option value="none">なし</option>
+                <option value="solid">実線</option>
+                <option value="dashed">破線</option>
+                <option value="dotted">点線</option>
+              </select>
+            </div>
+
+            <div class="prop-group">
+              <label for="shape-radius">角の丸み (px)</label>
+              <input type="range" id="shape-radius" class="form-range" min="0" max="150" value="8">
+            </div>
+          </div>
+
+          <!-- Image properties -->
+          <div id="image-properties" class="prop-sub-section" style="display:none">
+            <div class="prop-group">
+              <label for="image-url">画像URL</label>
+              <input type="text" id="image-url" class="form-input" placeholder="https://example.com/image.jpg">
+            </div>
+            
+            <div class="prop-group">
+              <label for="image-radius">角の丸み (px)</label>
+              <input type="range" id="image-radius" class="form-range" min="0" max="150" value="8">
+            </div>
+          </div>
+
+          <!-- Layer actions / Delete -->
+          <div class="element-actions-section">
+            <div class="prop-group">
+              <label>レイヤー重ね順</label>
+              <div class="btn-row">
+                <button id="btn-layer-front" class="action-btn secondary width-50">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                  <span>最前面へ</span>
+                </button>
+                <button id="btn-layer-back" class="action-btn secondary width-50">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/></svg>
+                  <span>最背面へ</span>
+                </button>
+              </div>
+            </div>
+
+            <button id="btn-delete-element" class="action-btn danger">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              <span>要素を削除</span>
+            </button>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <!-- Presentation Overlay (Mode: Fullscreen inside client) -->
+    <div id="presentation-overlay" style="display:none">
+      <div id="presentation-viewport">
+        <!-- Renders the slides and transitions -->
+      </div>
+      <div id="presentation-controls">
+        <button id="pres-btn-prev" class="pres-control-btn">&larr;</button>
+        <div id="pres-progress-container"><div id="pres-progress-bar"></div></div>
+        <button id="pres-btn-next" class="pres-control-btn">&rarr;</button>
+        <button id="pres-btn-exit" class="pres-control-btn red">終了</button>
+        <div id="pres-counter"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden container for printing PDF -->
+  <div id="print-container" style="display:none"></div>
+
+  <!-- App bootstrap -->
+</body>
+</html>
