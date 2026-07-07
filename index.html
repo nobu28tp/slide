@@ -435,7 +435,84 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 const E = "slidecraft_project_data";
 const S = 1280;
 const x = 720;
-const syncChannel = new BroadcastChannel("slidecraft_sync");
+const syncChannel = (() => {
+  try {
+    return new BroadcastChannel("slidecraft_sync");
+  } catch {
+    return { postMessage() {}, addEventListener() {}, close() {} };
+  }
+})();
+let activePresentationSessionId = null;
+let activePresentationPayload = null;
+
+function makePresentationSessionId() {
+  return "pres-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+function presentationStorageKey(sessionId) {
+  return "slidecraft_presentation_" + sessionId;
+}
+
+function messageMatchesPresentation(data) {
+  return !activePresentationSessionId || !data || !data.sessionId || data.sessionId === activePresentationSessionId;
+}
+
+function postPresentationMessage(message) {
+  const payload = { ...message };
+  if (!payload.sessionId && activePresentationSessionId) payload.sessionId = activePresentationSessionId;
+  try {
+    syncChannel.postMessage(payload);
+  } catch {}
+  const targets = [];
+  if (window.playerWindow && !window.playerWindow.closed) targets.push(window.playerWindow);
+  if (window.opener) targets.push(window.opener);
+  targets.forEach(target => {
+    try {
+      target.postMessage(payload, "*");
+    } catch {}
+  });
+}
+
+function cleanupOldPresentationSnapshots() {
+  const maxAge = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  try {
+    Object.keys(localStorage).forEach(key => {
+      if (!key.startsWith("slidecraft_presentation_")) return;
+      try {
+        const data = JSON.parse(localStorage.getItem(key) || "{}");
+        if (!data.createdAt || now - data.createdAt > maxAge) localStorage.removeItem(key);
+      } catch {
+        localStorage.removeItem(key);
+      }
+    });
+  } catch {}
+}
+
+function readLocalStorageJSON(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorageJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sendPresentationSnapshot(targetWindow) {
+  if (!targetWindow || !activePresentationPayload) return;
+  try {
+    targetWindow.postMessage({ type: "INIT_PRESENTATION", sessionId: activePresentationSessionId, payload: activePresentationPayload }, "*");
+  } catch {}
+}
 
 function escapeHTML(value) {
   return String(value || "").replace(/[&<>"']/g, ch => ({
@@ -445,6 +522,23 @@ function escapeHTML(value) {
     '"': "&quot;",
     "'": "&#39;"
   }[ch]));
+}
+
+function safePrompt(message, fallbackValue = "") {
+  try {
+    const value = window.prompt(message, fallbackValue);
+    return value === null ? null : value;
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function safeConfirm(message, fallbackValue = true) {
+  try {
+    return window.confirm(message);
+  } catch {
+    return fallbackValue;
+  }
 }
 
 function isAllowedLink(url) {
@@ -632,10 +726,120 @@ function toPPTXColor(value, fallback = "FFFFFF") {
   return fallback;
 }
 
+function cloneJSON(value) {
+  return JSON.parse(JSON.stringify(value || null));
+}
+
+function makeId(prefix) {
+  return prefix + "-" + Math.random().toString(36).substr(2, 9);
+}
+
+function normalizeMaster(master) {
+  if (!master || typeof master !== "object") return null;
+  const id = master.id || makeId("master");
+  return {
+    id,
+    name: master.name || "マスター",
+    background: master.background || { type: "color", value: "#1e1e24" },
+    elements: Array.isArray(master.elements) ? master.elements.map((elem, index) => ({
+      ...cloneJSON(elem),
+      id: elem.id || `${id}-elem-${index + 1}`,
+      locked: true,
+      masterElement: true
+    })) : []
+  };
+}
+
+function normalizeLayout(layout, fallbackMasterId = null) {
+  if (!layout || typeof layout !== "object") return null;
+  const id = layout.id || makeId("layout");
+  return {
+    id,
+    name: layout.name || "レイアウト",
+    masterId: layout.masterId || fallbackMasterId || null,
+    background: Object.prototype.hasOwnProperty.call(layout, "background") ? layout.background : null,
+    elements: Array.isArray(layout.elements) ? layout.elements.map((elem, index) => ({
+      ...cloneJSON(elem),
+      id: elem.id || `${id}-elem-${index + 1}`
+    })) : []
+  };
+}
+
+function createDefaultLayouts(masterId) {
+  const font = "Inter, sans-serif";
+  const textBase = { color: "#ffffff", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", fontFamily: font, backgroundColor: "transparent" };
+  return [
+    {
+      id: "title",
+      name: "タイトルページ",
+      masterId,
+      background: null,
+      elements: [
+        { id: "layout-title-title", type: "text", x: 120, y: 220, width: 1040, height: 120, content: "タイトルを入力", style: { ...textBase, fontSize: 60, fontWeight: "bold", textAlign: "center" } },
+        { id: "layout-title-subtitle", type: "text", x: 190, y: 360, width: 900, height: 80, content: "サブタイトルを入力してください", style: { ...textBase, fontSize: 26, color: "#cbd5e1", textAlign: "center" } }
+      ]
+    },
+    {
+      id: "agenda",
+      name: "目次ページ",
+      masterId,
+      background: null,
+      elements: [
+        { id: "layout-agenda-title", type: "text", x: 90, y: 70, width: 900, height: 70, content: "Agenda", style: { ...textBase, fontSize: 42, fontWeight: "bold", textAlign: "left" } },
+        { id: "layout-agenda-body", type: "text", x: 150, y: 190, width: 900, height: 390, content: "1. はじめに\n2. 本題\n3. まとめ", style: { ...textBase, fontSize: 30, color: "#e5e7eb", textAlign: "left" } }
+      ]
+    },
+    {
+      id: "content",
+      name: "通常ページ",
+      masterId,
+      background: null,
+      elements: [
+        { id: "layout-content-title", type: "text", x: 80, y: 60, width: 900, height: 70, content: "見出しを入力", style: { ...textBase, fontSize: 38, fontWeight: "bold", textAlign: "left" } },
+        { id: "layout-content-body", type: "text", x: 100, y: 165, width: 1080, height: 420, content: "本文を入力してください", style: { ...textBase, fontSize: 24, color: "#e5e7eb", textAlign: "left" } }
+      ]
+    },
+    {
+      id: "back-cover",
+      name: "裏表紙",
+      masterId,
+      background: null,
+      elements: [
+        { id: "layout-back-title", type: "text", x: 120, y: 260, width: 1040, height: 110, content: "Thank you", style: { ...textBase, fontSize: 64, fontWeight: "bold", textAlign: "center" } },
+        { id: "layout-back-contact", type: "text", x: 220, y: 390, width: 840, height: 80, content: "お問い合わせ先を入力", style: { ...textBase, fontSize: 22, color: "#cbd5e1", textAlign: "center" } }
+      ]
+    }
+  ];
+}
+
+function getMasterById(source, slide) {
+  const masters = source && Array.isArray(source.masters) ? source.masters : [];
+  if (!masters.length) return null;
+  const id = slide && slide.masterId || source.defaultMasterId;
+  return masters.find(master => master && master.id === id) || masters[0] || null;
+}
+
+function getEffectiveSlideBackground(source, slide) {
+  const master = getMasterById(source, slide);
+  return slide && slide.background || master && master.background || { type: "color", value: "#1e1e24" };
+}
+
+function getRenderableSlideElements(source, slide) {
+  const master = getMasterById(source, slide);
+  const masterElements = master && Array.isArray(master.elements) ? master.elements.map((elem, index) => ({
+    ...cloneJSON(elem),
+    id: `master-${master.id}-${elem.id || index}`,
+    locked: true,
+    masterElement: true
+  })) : [];
+  return masterElements.concat(Array.isArray(slide && slide.elements) ? slide.elements : []);
+}
+
 // Helper function to render a slide element to a DOM container (used by Player/Presenter/Print)
 function renderDOMElement(elem, isLight) {
   const wrapper = document.createElement("div");
   wrapper.className = "slide-element";
+  if (elem.masterElement) wrapper.className += " master-element";
   wrapper.style.left = elem.x + "px";
   wrapper.style.top = elem.y + "px";
   wrapper.style.width = elem.width + "px";
@@ -747,6 +951,11 @@ function applyBoardBackground(board, bg, isLight) {
 class I {
   constructor() {
 	    this.slides = [];
+	    this.theme = {};
+	    this.masters = [];
+	    this.layouts = [];
+	    this.defaultMasterId = null;
+	    this.defaultLayoutId = null;
 	    this.currentSlideId = null;
 	    this.selectedElementId = null;
 	    this.selectedElementIds = [];
@@ -777,6 +986,11 @@ class I {
   newProject() {
     const e = this.createSlide();
     this.slides = [e];
+    this.theme = {};
+    this.masters = [];
+    this.layouts = [];
+    this.defaultMasterId = null;
+    this.defaultLayoutId = null;
     this.currentSlideId = e.id;
 	    this.selectedElementId = null;
 	    this.selectedElementIds = [];
@@ -785,10 +999,24 @@ class I {
     this.saveToStorage();
     this.notify("projectImport");
   }
-  createSlide() {
+  createSlide(layoutId = null) {
+    const layout = this.getLayoutById(layoutId || this.defaultLayoutId);
+    if (layout) {
+      const masterId = layout.masterId || this.defaultMasterId || null;
+      return {
+        id: makeId("slide"),
+        masterId,
+        layoutId: layout.id,
+        background: Object.prototype.hasOwnProperty.call(layout, "background") ? cloneJSON(layout.background) : null,
+        elements: (layout.elements || []).map(elem => ({ ...cloneJSON(elem), id: makeId("elem") })),
+        notes: ""
+      };
+    }
     return {
       id: "slide-" + Math.random().toString(36).substr(2, 9),
-      background: { type: "color", value: "#1e1e24" },
+      masterId: this.defaultMasterId || null,
+      layoutId: null,
+      background: this.defaultMasterId ? null : { type: "color", value: "#1e1e24" },
       elements: [
         {
           id: "elem-" + Math.random().toString(36).substr(2, 9),
@@ -829,17 +1057,22 @@ class I {
 	    return this.selectedElementIds && this.selectedElementIds.length ? [...this.selectedElementIds] : (this.selectedElementId ? [this.selectedElementId] : []);
 	  }
 	  pushCheckpoint() {
-	    const e = JSON.stringify({ slides: this.slides, currentSlideId: this.currentSlideId, selectedElementId: this.selectedElementId, selectedElementIds: this.getSelectedElementIds() });
+	    const e = JSON.stringify({ slides: this.slides, theme: this.theme, masters: this.masters, layouts: this.layouts, defaultMasterId: this.defaultMasterId, defaultLayoutId: this.defaultLayoutId, currentSlideId: this.currentSlideId, selectedElementId: this.selectedElementId, selectedElementIds: this.getSelectedElementIds() });
     this.undoStack.push(e);
     this.undoStack.length > this.maxHistorySize && this.undoStack.shift();
     this.redoStack = [];
   }
   undo() {
     if (this.undoStack.length === 0) return;
-	    const e = JSON.stringify({ slides: this.slides, currentSlideId: this.currentSlideId, selectedElementId: this.selectedElementId, selectedElementIds: this.getSelectedElementIds() });
+	    const e = JSON.stringify({ slides: this.slides, theme: this.theme, masters: this.masters, layouts: this.layouts, defaultMasterId: this.defaultMasterId, defaultLayoutId: this.defaultLayoutId, currentSlideId: this.currentSlideId, selectedElementId: this.selectedElementId, selectedElementIds: this.getSelectedElementIds() });
     this.redoStack.push(e);
     const n = JSON.parse(this.undoStack.pop());
 	    this.slides = n.slides;
+	    this.theme = n.theme || {};
+	    this.masters = n.masters || [];
+	    this.layouts = n.layouts || [];
+	    this.defaultMasterId = n.defaultMasterId || null;
+	    this.defaultLayoutId = n.defaultLayoutId || null;
 	    this.currentSlideId = n.currentSlideId;
 	    this.selectedElementId = n.selectedElementId;
 	    this.selectedElementIds = n.selectedElementIds || (n.selectedElementId ? [n.selectedElementId] : []);
@@ -848,10 +1081,15 @@ class I {
   }
   redo() {
     if (this.redoStack.length === 0) return;
-	    const e = JSON.stringify({ slides: this.slides, currentSlideId: this.currentSlideId, selectedElementId: this.selectedElementId, selectedElementIds: this.getSelectedElementIds() });
+	    const e = JSON.stringify({ slides: this.slides, theme: this.theme, masters: this.masters, layouts: this.layouts, defaultMasterId: this.defaultMasterId, defaultLayoutId: this.defaultLayoutId, currentSlideId: this.currentSlideId, selectedElementId: this.selectedElementId, selectedElementIds: this.getSelectedElementIds() });
     this.undoStack.push(e);
     const n = JSON.parse(this.redoStack.pop());
 	    this.slides = n.slides;
+	    this.theme = n.theme || {};
+	    this.masters = n.masters || [];
+	    this.layouts = n.layouts || [];
+	    this.defaultMasterId = n.defaultMasterId || null;
+	    this.defaultLayoutId = n.defaultLayoutId || null;
 	    this.currentSlideId = n.currentSlideId;
 	    this.selectedElementId = n.selectedElementId;
 	    this.selectedElementIds = n.selectedElementIds || (n.selectedElementId ? [n.selectedElementId] : []);
@@ -866,9 +1104,20 @@ class I {
       this.notify("slideSelect");
     }
   }
-  addSlide() {
+  getLayoutById(layoutId) {
+    return layoutId ? (this.layouts || []).find(layout => layout && layout.id === layoutId) || null : null;
+  }
+  ensureDefaultLayouts(masterId = this.defaultMasterId) {
+    if (!masterId) return;
+    if (!Array.isArray(this.layouts)) this.layouts = [];
+    if (this.layouts.length === 0) {
+      this.layouts = createDefaultLayouts(masterId).map(layout => normalizeLayout(layout, masterId)).filter(Boolean);
+      this.defaultLayoutId = "content";
+    }
+  }
+  addSlide(layoutId = null) {
     this.pushCheckpoint();
-    const e = this.createSlide();
+    const e = this.createSlide(layoutId || this.defaultLayoutId);
     const n = this.slides.findIndex(i => i.id === this.currentSlideId);
     n !== -1 ? this.slides.splice(n + 1, 0, e) : this.slides.push(e);
 	    this.currentSlideId = e.id;
@@ -927,6 +1176,141 @@ class I {
       this.saveToStorage();
       this.notify("slideUpdate");
     }
+  }
+  createMasterFromCurrentSlide(name, moveElements = true) {
+    const slide = this.getCurrentSlide();
+    if (!slide) return null;
+    this.pushCheckpoint();
+    const id = makeId("master");
+    const master = normalizeMaster({
+      id,
+      name: name || "マスター " + (this.masters.length + 1),
+      background: cloneJSON(slide.background || { type: "color", value: "#1e1e24" }),
+      elements: (slide.elements || []).map(elem => ({
+        ...cloneJSON(elem),
+        id: makeId("master-elem"),
+        locked: true,
+        masterElement: true
+      }))
+    });
+    this.masters.push(master);
+    this.defaultMasterId = master.id;
+    this.ensureDefaultLayouts(master.id);
+    slide.masterId = master.id;
+    if (moveElements) {
+      slide.background = null;
+      const titleLayout = this.getLayoutById("title") || this.layouts[0] || null;
+      slide.layoutId = titleLayout ? titleLayout.id : null;
+      slide.elements = titleLayout ? titleLayout.elements.map(elem => ({ ...cloneJSON(elem), id: makeId("elem") })) : [];
+    }
+    this.saveToStorage();
+    this.notify("masterCreate", { masterId: master.id });
+    return master;
+  }
+  importMasterProject(data) {
+    if (!data || typeof data !== "object") return false;
+    const incomingMasters = Array.isArray(data.masters) ? data.masters : (data.id && data.elements ? [data] : []);
+    if (!incomingMasters.length) return false;
+    this.pushCheckpoint();
+    const normalized = incomingMasters.map(normalizeMaster).filter(Boolean);
+    normalized.forEach(master => {
+      let id = master.id;
+      while (this.masters.some(existing => existing.id === id)) id = makeId("master");
+      master.id = id;
+      master.elements = master.elements.map(elem => ({ ...elem, id: elem.id || makeId("master-elem"), locked: true, masterElement: true }));
+      this.masters.push(master);
+    });
+    if (data.theme && typeof data.theme === "object") this.theme = cloneJSON(data.theme);
+    this.defaultMasterId = normalized[0] ? normalized[0].id : this.defaultMasterId;
+    if (Array.isArray(data.layouts)) {
+      this.layouts = data.layouts.map(layout => normalizeLayout(layout, this.defaultMasterId)).filter(Boolean);
+    }
+    this.defaultLayoutId = data.defaultLayoutId || (this.layouts[0] && this.layouts[0].id) || this.defaultLayoutId;
+    this.ensureDefaultLayouts(this.defaultMasterId);
+    this.saveToStorage();
+    this.notify("masterImport", { masterId: this.defaultMasterId });
+    return true;
+  }
+  applyMaster(masterId, scope = "current") {
+    if (!this.masters.some(master => master.id === masterId)) return false;
+    this.pushCheckpoint();
+    const targets = scope === "all" ? this.slides : [this.getCurrentSlide()].filter(Boolean);
+    targets.forEach(slide => {
+      slide.masterId = masterId;
+      slide.background = null;
+    });
+    this.defaultMasterId = masterId;
+    this.saveToStorage();
+    this.notify("masterApply", { masterId, scope });
+    return true;
+  }
+  setCurrentSlideMaster(masterId) {
+    const slide = this.getCurrentSlide();
+    if (!slide) return false;
+    if (masterId && !this.masters.some(master => master.id === masterId)) return false;
+    this.pushCheckpoint();
+    slide.masterId = masterId || null;
+    if (masterId) slide.background = null;
+    this.saveToStorage();
+    this.notify("masterSelect", { masterId: slide.masterId });
+    return true;
+  }
+  createLayoutFromCurrentSlide(name) {
+    const slide = this.getCurrentSlide();
+    if (!slide) return null;
+    this.pushCheckpoint();
+    const masterId = slide.masterId || this.defaultMasterId || null;
+    const layout = normalizeLayout({
+      id: makeId("layout"),
+      name: name || "カスタムレイアウト",
+      masterId,
+      background: Object.prototype.hasOwnProperty.call(slide, "background") ? cloneJSON(slide.background) : null,
+      elements: (slide.elements || []).map(elem => ({ ...cloneJSON(elem), id: makeId("layout-elem") }))
+    }, masterId);
+    this.layouts.push(layout);
+    this.defaultLayoutId = layout.id;
+    slide.layoutId = layout.id;
+    this.saveToStorage();
+    this.notify("layoutCreate", { layoutId: layout.id });
+    return layout;
+  }
+  applyLayout(layoutId, scope = "current") {
+    const layout = this.getLayoutById(layoutId);
+    if (!layout) return false;
+    this.pushCheckpoint();
+    const targets = scope === "all" ? this.slides : [this.getCurrentSlide()].filter(Boolean);
+    targets.forEach(slide => {
+      slide.layoutId = layout.id;
+      slide.masterId = layout.masterId || this.defaultMasterId || slide.masterId || null;
+      slide.background = Object.prototype.hasOwnProperty.call(layout, "background") ? cloneJSON(layout.background) : null;
+      slide.elements = (layout.elements || []).map(elem => ({ ...cloneJSON(elem), id: makeId("elem") }));
+    });
+    this.defaultLayoutId = layout.id;
+    this.saveToStorage();
+    this.notify("layoutApply", { layoutId: layout.id, scope });
+    return true;
+  }
+  exportMasterJSON() {
+    return {
+      version: "1.8.0",
+      theme: cloneJSON(this.theme || {}),
+      masters: cloneJSON(this.masters || []),
+      layouts: cloneJSON(this.layouts || []),
+      defaultMasterId: this.defaultMasterId,
+      defaultLayoutId: this.defaultLayoutId
+    };
+  }
+  getProjectJSON() {
+    return {
+      slides: this.slides,
+      currentSlideId: this.currentSlideId,
+      theme: this.theme || {},
+      masters: this.masters || [],
+      layouts: this.layouts || [],
+      defaultMasterId: this.defaultMasterId,
+      defaultLayoutId: this.defaultLayoutId,
+      version: "1.8.0"
+    };
   }
   updateSlideNotes(slideId, notesText, isDirect = false) {
     const slide = this.slides.find(s => s.id === slideId);
@@ -1145,9 +1529,17 @@ class I {
   importProject(e) {
     if (!e) return !1;
     if (this.pushCheckpoint(), Array.isArray(e.slides) && e.slides.length > 0 && Array.isArray(e.slides[0].elements)) {
+      this.theme = e.theme && typeof e.theme === "object" ? cloneJSON(e.theme) : {};
+      this.masters = Array.isArray(e.masters) ? e.masters.map(normalizeMaster).filter(Boolean) : [];
+      this.defaultMasterId = e.defaultMasterId || (this.masters[0] && this.masters[0].id) || null;
+      this.layouts = Array.isArray(e.layouts) ? e.layouts.map(layout => normalizeLayout(layout, this.defaultMasterId)).filter(Boolean) : [];
+      this.defaultLayoutId = e.defaultLayoutId || (this.layouts[0] && this.layouts[0].id) || null;
+      this.ensureDefaultLayouts(this.defaultMasterId);
       this.slides = e.slides.map(slide => ({
         id: slide.id || "slide-" + Math.random().toString(36).substr(2, 9),
-        background: slide.background || { type: "color", value: "#1e1e24" },
+        masterId: slide.masterId || this.defaultMasterId || null,
+        layoutId: slide.layoutId || null,
+        background: Object.prototype.hasOwnProperty.call(slide, "background") ? slide.background : { type: "color", value: "#1e1e24" },
         elements: Array.isArray(slide.elements) ? slide.elements : [],
         notes: slide.notes || ""
       }));
@@ -1286,8 +1678,8 @@ class I {
   }
   saveToStorage() {
     try {
-      localStorage.setItem(E, JSON.stringify({ slides: this.slides, currentSlideId: this.currentSlideId, version: "1.7.1" }));
-      syncChannel.postMessage({ type: "PROJECT_UPDATE", slides: this.slides });
+      localStorage.setItem(E, JSON.stringify(this.getProjectJSON()));
+      syncChannel.postMessage({ type: "PROJECT_UPDATE", slides: this.slides, masters: this.masters, layouts: this.layouts, theme: this.theme, defaultMasterId: this.defaultMasterId, defaultLayoutId: this.defaultLayoutId });
     } catch (e) {
       console.error("Save failed", e);
     }
@@ -1298,9 +1690,17 @@ class I {
       if (e) {
         const n = JSON.parse(e);
         if (n && Array.isArray(n.slides) && n.slides.length > 0) {
+          this.theme = n.theme && typeof n.theme === "object" ? cloneJSON(n.theme) : {};
+          this.masters = Array.isArray(n.masters) ? n.masters.map(normalizeMaster).filter(Boolean) : [];
+          this.defaultMasterId = n.defaultMasterId || (this.masters[0] && this.masters[0].id) || null;
+          this.layouts = Array.isArray(n.layouts) ? n.layouts.map(layout => normalizeLayout(layout, this.defaultMasterId)).filter(Boolean) : [];
+          this.defaultLayoutId = n.defaultLayoutId || (this.layouts[0] && this.layouts[0].id) || null;
+          this.ensureDefaultLayouts(this.defaultMasterId);
           const i = n.slides.filter(t => t && typeof t == "object" && t.id).map(t => ({
             id: t.id,
-            background: { type: t.background && t.background.type || "color", value: t.background && t.background.value || "#1e1e24" },
+            masterId: t.masterId || this.defaultMasterId || null,
+            layoutId: t.layoutId || null,
+            background: t.background ? { type: t.background.type || "color", value: t.background.value || "#1e1e24" } : null,
             elements: Array.isArray(t.elements) ? t.elements.filter(s => s && s.id) : [],
             notes: t.notes || ""
           }));
@@ -1394,8 +1794,10 @@ class w {
   render() {
     const e = this.state.getCurrentSlide();
     if (!e) { this.canvas.innerHTML = ""; return; }
-    applyBoardBackground(this.canvas, e.background, document.body.classList.contains("light-theme"));
+    const isLight = document.body.classList.contains("light-theme");
+    applyBoardBackground(this.canvas, getEffectiveSlideBackground(this.state, e), isLight);
     this.canvas.innerHTML = "";
+    getRenderableSlideElements(this.state, e).filter(n => n.masterElement).forEach(n => this.canvas.appendChild(renderDOMElement(n, isLight)));
     e.elements.forEach(n => this.canvas.appendChild(this.createElementDOM(n)));
     this.renderSelectionOutline();
   }
@@ -1499,7 +1901,10 @@ class w {
 
 class k {
   constructor(e, n) {
-    this.state = e, this.listContainer = document.getElementById(n), this.draggedSlideId = null, document.getElementById("add-slide-btn").addEventListener("click", () => this.state.addSlide()), this.setupContextMenu(), this.state.subscribe(() => this.render()), this.render();
+    this.state = e, this.listContainer = document.getElementById(n), this.draggedSlideId = null, document.getElementById("add-slide-btn").addEventListener("click", () => {
+      const select = document.getElementById("select-add-layout");
+      this.state.addSlide(select ? select.value : null);
+    }), this.setupContextMenu(), this.state.subscribe(() => this.render()), this.render();
   }
   setupDragAndDrop(e, n) {
     e.draggable = !0, e.addEventListener("dragstart", i => { this.draggedSlideId = n, e.classList.add("dragging"), i.dataTransfer.effectAllowed = "move" }), e.addEventListener("dragend", () => { e.classList.remove("dragging"), this.draggedSlideId = null, this.listContainer.querySelectorAll(".slide-thumb-item").forEach(i => i.classList.remove("drag-over")) }), e.addEventListener("dragover", i => { i.preventDefault(), this.draggedSlideId !== n && (i.dataTransfer.dropEffect = "move", e.classList.add("drag-over")) }), e.addEventListener("dragleave", () => e.classList.remove("drag-over")), e.addEventListener("drop", i => { i.preventDefault(), e.classList.remove("drag-over"), this.draggedSlideId && this.draggedSlideId !== n && this.state.reorderSlides(this.draggedSlideId, n) });
@@ -1517,6 +1922,12 @@ class k {
   }
   render() {
     this.listContainer.innerHTML = "";
+    const layoutSelect = document.getElementById("select-add-layout");
+    if (layoutSelect) {
+      const selected = layoutSelect.value || this.state.defaultLayoutId || "";
+      layoutSelect.innerHTML = '<option value="">標準</option>' + (this.state.layouts || []).map(layout => '<option value="' + escapeHTML(layout.id) + '">' + escapeHTML(layout.name || layout.id) + '</option>').join("");
+      layoutSelect.value = selected;
+    }
     const e = document.body.classList.contains("light-theme");
     this.state.slides.forEach((n, i) => {
       if (!n) return;
@@ -1528,12 +1939,12 @@ class k {
       r.className = "slide-options-btn", r.innerHTML = "⋮", r.addEventListener("click", o => this.showContextMenu(o, n.id)), t.appendChild(r);
       const u = document.createElement("div");
       u.className = "slide-thumb-preview";
-      const o = n.background || { type: "color", value: "#1e1e24" };
+      const o = getEffectiveSlideBackground(this.state, n);
       o.type === "color" ? u.style.backgroundColor = o.value : o.type === "gradient" ? u.style.backgroundImage = o.value : o.type === "image" && (u.style.backgroundImage = "url(" + o.value + ")", u.style.backgroundSize = "cover");
       
       // Calculate dynamic ratio based on sidebar thumbnail width (160px sidebar -> approx 116px content width)
       const c = 116 / 1280;
-      (n.elements || []).forEach(o => {
+      getRenderableSlideElements(this.state, n).forEach(o => {
         if (!o) return;
         const d = document.createElement("div");
         d.className = "mini-element mini-" + o.type;
@@ -1622,11 +2033,15 @@ class C {
     this.state = e, this.activePresSlideIndex = 0;
   }
   exportJSON() {
-    const e = { slides: this.state.slides, currentSlideId: this.state.currentSlideId, version: "1.7.1" }, n = new Blob([JSON.stringify(e, null, 2)], { type: "application/json" }), i = URL.createObjectURL(n), t = document.createElement("a");
+    const e = this.state.getProjectJSON(), n = new Blob([JSON.stringify(e, null, 2)], { type: "application/json" }), i = URL.createObjectURL(n), t = document.createElement("a");
     t.href = i, t.download = "slidecraft_project_" + Date.now() + ".json", document.body.appendChild(t), t.click(), document.body.removeChild(t), URL.revokeObjectURL(i);
   }
+  exportMasterJSON() {
+    const e = this.state.exportMasterJSON(), n = new Blob([JSON.stringify(e, null, 2)], { type: "application/json" }), i = URL.createObjectURL(n), t = document.createElement("a");
+    t.href = i, t.download = "slidecraft_master_" + Date.now() + ".json", document.body.appendChild(t), t.click(), document.body.removeChild(t), URL.revokeObjectURL(i);
+  }
   exportSingleHTML() {
-    const e = JSON.stringify(this.state.slides), i = document.body.classList.contains("light-theme") ? "light-theme" : "", t = `* { margin:0; padding:0; box-sizing:border-box; }
+    const e = JSON.stringify(this.state.getProjectJSON()), i = document.body.classList.contains("light-theme") ? "light-theme" : "", t = `* { margin:0; padding:0; box-sizing:border-box; }
 body { background-color: #050508; color: #f3f4f6; font-family: "Inter","Noto Sans JP",sans-serif; overflow: hidden; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
 body.light-theme { background-color: #f1f5f9; color: #0f172a; }
 #presentation-board { width:1280px; height:720px; box-shadow:0 30px 60px rgba(0,0,0,0.8); position:relative; overflow:hidden; background-color:#13131a; flex-shrink:0; transform-origin:center center; }
@@ -1649,7 +2064,8 @@ body.light-theme .btn-pres { background-color:rgba(255,255,255,0.9); border-colo
 #presentation-progress-bar { height:100%; width:0; background-color:#6366f1; transition:width 0.2s ease; }
 #presentation-page-badge { position:absolute; bottom:24px; left:24px; z-index:100000; background-color:rgba(18,18,26,0.75); border:1px solid rgba(255,255,255,0.08); color:#fff; padding:6px 14px; border-radius:20px; font-size:13px; font-weight:500; pointer-events:none; }
 body.light-theme #presentation-page-badge { background-color:rgba(255,255,255,0.85); border-color:rgba(0,0,0,0.08); color:#0f172a; }
-@media print { body { background:white !important; } #presentation-board { transform:none !important; box-shadow:none !important; page-break-after:always; } .presentation-controls,.presentation-progress-container,#presentation-page-badge { display:none !important; } }`,s="var slides="+e+`;
+@media print { body { background:white !important; } #presentation-board { transform:none !important; box-shadow:none !important; page-break-after:always; } .presentation-controls,.presentation-progress-container,#presentation-page-badge { display:none !important; } }`,s="var deck="+e+`;
+var slides=deck.slides||[];
 var currentIdx=0;
 var board=document.getElementById("presentation-board");
 	var badge=document.getElementById("presentation-page-badge");
@@ -1660,14 +2076,17 @@ var board=document.getElementById("presentation-board");
 	function normalizeTableContent(elem){var rows=Math.max(1,parseInt(elem&&elem.rows,10)||3);var cols=Math.max(1,parseInt(elem&&elem.cols,10)||3);var source=Array.isArray(elem&&elem.content)?elem.content:[];return Array.from({length:rows},function(_,r){var row=Array.isArray(source[r])?source[r]:[];return Array.from({length:cols},function(_,c){return String(row[c]||"");});});}
 	function resizeNumberArray(values,length,fallback){var source=Array.isArray(values)?values:[];return Array.from({length:Math.max(1,parseInt(length,10)||1)},function(_,i){return Math.max(12,parseInt(source[i],10)||fallback);});}
 	function normalizeTableLayout(elem){var rows=Math.max(1,parseInt(elem&&elem.rows,10)||3);var cols=Math.max(1,parseInt(elem&&elem.cols,10)||3);return{colWidths:resizeNumberArray(elem&&elem.colWidths,cols,Math.max(40,Math.round(((elem&&elem.width)||560)/cols))),rowHeights:resizeNumberArray(elem&&elem.rowHeights,rows,Math.max(28,Math.round(((elem&&elem.height)||260)/rows)))};}
+	function getMasterById(slide){var masters=Array.isArray(deck.masters)?deck.masters:[];var id=(slide&&slide.masterId)||deck.defaultMasterId;return masters.find(function(master){return master&&master.id===id;})||masters[0]||null;}
+	function getEffectiveBackground(slide){var master=getMasterById(slide);return (slide&&slide.background)||(master&&master.background)||{type:"color",value:"#1e1e24"};}
+	function getElements(slide){var master=getMasterById(slide);var masterElements=master&&Array.isArray(master.elements)?master.elements.map(function(elem,index){var copy=Object.assign({},elem);copy.id="master-"+master.id+"-"+(elem.id||index);copy.masterElement=true;return copy;}):[];return masterElements.concat(Array.isArray(slide&&slide.elements)?slide.elements:[]);}
 	function renderTableElement(elem){var st=elem.style||{};var layout=normalizeTableLayout(elem);var table=document.createElement("table");table.className="table-inner";table.style.fontFamily=st.fontFamily||"Inter, sans-serif";var colgroup=document.createElement("colgroup");layout.colWidths.forEach(function(width){var col=document.createElement("col");col.style.width=width+"px";colgroup.appendChild(col);});table.appendChild(colgroup);normalizeTableContent(elem).forEach(function(row,r){var tr=document.createElement("tr");tr.style.height=(layout.rowHeights[r]||40)+"px";row.forEach(function(value){var isHeader=r===0&&st.header!==false;var cell=document.createElement(isHeader?"th":"td");cell.textContent=value;cell.style.borderColor=st.borderColor||"rgba(255,255,255,0.35)";cell.style.borderWidth=(st.borderWidth==null?1:st.borderWidth)+"px";cell.style.borderStyle=st.borderStyle||"solid";cell.style.backgroundColor=isHeader?(st.headerColor||"#3730a3"):(st.backgroundColor||"rgba(15,23,42,0.3)");cell.style.color=isHeader?(st.headerTextColor||"#ffffff"):(st.color||"#ffffff");cell.style.fontSize=(isHeader?(st.headerFontSize||st.fontSize||18):(st.fontSize||18))+"px";cell.style.textAlign=isHeader?(st.headerTextAlign||st.textAlign||"left"):(st.textAlign||"left");tr.appendChild(cell);});table.appendChild(tr);});return table;}
 	function updateScale(){var sx=window.innerWidth/1280;var sy=window.innerHeight/720;var s=Math.min(sx,sy);board.style.transform="scale("+s+")";}
-function renderSlide(){var slide=slides[currentIdx];if(!slide)return;board.style.backgroundColor="";board.style.backgroundImage="";board.style.backgroundSize="";
-if(slide.background.type==="color"){board.style.backgroundColor=slide.background.value||(isLight?"#f1f5f9":"#1e1e24");}
-else if(slide.background.type==="gradient"){board.style.backgroundImage=slide.background.value||(isLight?"linear-gradient(135deg,#f8fafc 0%,#e2e8f0 100%)":"linear-gradient(135deg,#1e1b4b 0%,#0f172a 100%)");}
-else if(slide.background.type==="image"||slide.background.type==="url"){board.style.backgroundImage=slide.background.value?"url("+slide.background.value+")":"";board.style.backgroundSize="cover";}
+function renderSlide(){var slide=slides[currentIdx];if(!slide)return;var bg=getEffectiveBackground(slide);board.style.backgroundColor="";board.style.backgroundImage="";board.style.backgroundSize="";
+if(bg.type==="color"){board.style.backgroundColor=bg.value||(isLight?"#f1f5f9":"#1e1e24");}
+else if(bg.type==="gradient"){board.style.backgroundImage=bg.value||(isLight?"linear-gradient(135deg,#f8fafc 0%,#e2e8f0 100%)":"linear-gradient(135deg,#1e1b4b 0%,#0f172a 100%)");}
+else if(bg.type==="image"||bg.type==="url"){board.style.backgroundImage=bg.value?"url("+bg.value+")":"";board.style.backgroundSize="cover";}
 board.innerHTML="";
-	slide.elements.forEach(function(elem){var wrapper=document.createElement("div");wrapper.className="slide-element";wrapper.style.left=elem.x+"px";wrapper.style.top=elem.y+"px";wrapper.style.width=elem.width+"px";wrapper.style.height=elem.height+"px";wrapper.style.transform="rotate("+((elem.rotation||0))+"deg)";wrapper.style.transformOrigin="center center";
+	getElements(slide).forEach(function(elem){var wrapper=document.createElement("div");wrapper.className="slide-element";wrapper.style.left=elem.x+"px";wrapper.style.top=elem.y+"px";wrapper.style.width=elem.width+"px";wrapper.style.height=elem.height+"px";wrapper.style.transform="rotate("+((elem.rotation||0))+"deg)";wrapper.style.transformOrigin="center center";
 	var inner=document.createElement("div");inner.className="element-inner";
 	if(elem.style&&elem.type!=="shape"&&elem.type!=="iframe"&&elem.type!=="table"){if(elem.style.backgroundColor)inner.style.backgroundColor=elem.style.backgroundColor;if(elem.style.borderRadius)inner.style.borderRadius=elem.style.borderRadius+"px";if(elem.style.borderWidth)inner.style.borderWidth=elem.style.borderWidth+"px";if(elem.style.borderColor)inner.style.borderColor=elem.style.borderColor;if(elem.style.borderStyle)inner.style.borderStyle=elem.style.borderStyle;}
 	if(elem.type==="text"){var txt=document.createElement("div");txt.className="text-inner";txt.innerHTML=elem.html||esc(elem.content).replace(/\\n/g,"<br>");
@@ -1736,8 +2155,8 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
         t.className="pdf-render-page";
         const s=document.createElement("div");
         s.className="pdf-render-slide";
-        applyBoardBackground(s,i.background||{type:"color",value:"#1e1e24"},n);
-        (i.elements||[]).forEach(r=>{
+        applyBoardBackground(s,getEffectiveSlideBackground(this.state,i),n);
+        getRenderableSlideElements(this.state,i).forEach(r=>{
           r&&s.appendChild(renderDOMElement(r,n))
         });
         t.appendChild(s);
@@ -1799,13 +2218,14 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
     try{
       const cache=new Map();
       for(const sl of this.state.slides){
-        for(const el of (sl.elements||[])){
+        for(const el of getRenderableSlideElements(this.state,sl)){
           if(el&&el.type==="image"&&el.content&&!el.content.startsWith("data:")&&!cache.has(el.content)){
             cache.set(el.content,await this._imgToB64(el.content));
           }
         }
-        if(sl.background&&sl.background.type==="image"&&sl.background.value&&!sl.background.value.startsWith("data:")&&!cache.has(sl.background.value)){
-          cache.set(sl.background.value,await this._imgToB64(sl.background.value));
+        const bgForCache=getEffectiveSlideBackground(this.state,sl);
+        if(bgForCache&&bgForCache.type==="image"&&bgForCache.value&&!bgForCache.value.startsWith("data:")&&!cache.has(bgForCache.value)){
+          cache.set(bgForCache.value,await this._imgToB64(bgForCache.value));
         }
       }
       const pptx=new PptxGenJS();
@@ -1813,7 +2233,7 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
       pptx.layout="SC16x9";
       this.state.slides.forEach(sl=>{
         const ps=pptx.addSlide();
-        const bg=sl.background||{type:"color",value:"#1e1e24"};
+        const bg=getEffectiveSlideBackground(this.state,sl);
         if(bg.type==="color"&&bg.value){
           ps.background={fill:bg.value.replace("#","")};
         }else if(bg.type==="gradient"){
@@ -1822,7 +2242,7 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
           const d=bg.value.startsWith("data:")?bg.value:cache.get(bg.value);
           if(d) ps.background={data:d};
         }
-        (sl.elements||[]).forEach(el=>{
+        getRenderableSlideElements(this.state,sl).forEach(el=>{
           if(!el)return;
           const xi=el.x/128,yi=el.y/128,wi=el.width/128,hi=el.height/128;
           if(el.type==="text"){
@@ -1898,14 +2318,30 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
     // 2. Find current slide index
     const startIdx = this.state.slides.findIndex(n => n.id === this.state.currentSlideId);
     const index = startIdx === -1 ? 0 : startIdx;
+    cleanupOldPresentationSnapshots();
+    activePresentationSessionId = makePresentationSessionId();
+    activePresentationPayload = { ...this.state.getProjectJSON(), createdAt: Date.now() };
+    writeLocalStorageJSON(presentationStorageKey(activePresentationSessionId), activePresentationPayload);
     
     // 3. Open player view in a new tab (not a new window)
-    window.playerWindow = window.open(window.location.pathname + `?mode=player&index=${index}`);
+    const baseUrl = window.location.href.split("#")[0].split("?")[0];
+    window.playerWindow = window.open(`${baseUrl}?mode=player&index=${index}&pid=${encodeURIComponent(activePresentationSessionId)}&t=${Date.now()}`);
+    if (window.playerWindow) {
+      let attempts = 0;
+      const sendTimer = setInterval(() => {
+        attempts++;
+        sendPresentationSnapshot(window.playerWindow);
+        if (attempts >= 25 || window.playerWindow.closed) clearInterval(sendTimer);
+      }, 120);
+    }
     
     // 4. Initialize and show presenter view on current tab
     presenterCurrentIdx = index;
     // Load slides list for presenter
-    presenterSlides = this.state.slides;
+    presenterSlides = JSON.parse(JSON.stringify(activePresentationPayload.slides));
+    presenterMasters = JSON.parse(JSON.stringify(activePresentationPayload.masters || []));
+    presenterTheme = JSON.parse(JSON.stringify(activePresentationPayload.theme || {}));
+    presenterDefaultMasterId = activePresentationPayload.defaultMasterId || null;
     initializePresenter();
   }
   updatePresScale(){
@@ -1923,8 +2359,8 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
     if(!e||!n)return;
     n.innerHTML="";
     const i=document.body.classList.contains("light-theme");
-    applyBoardBackground(n, e.background, i);
-    (e.elements||[]).forEach(s=>{s&&n.appendChild(renderDOMElement(s,i))});
+    applyBoardBackground(n, getEffectiveSlideBackground(this.state, e), i);
+    getRenderableSlideElements(this.state, e).forEach(s=>{s&&n.appendChild(renderDOMElement(s,i))});
     document.getElementById("presentation-page-badge").innerText=this.activePresSlideIndex+1+" / "+this.state.slides.length;
     document.getElementById("presentation-progress-bar").style.width=(this.activePresSlideIndex+1)/this.state.slides.length*100+"%";
   }
@@ -2011,6 +2447,18 @@ class A {
 	  loadSlideProperties(){
 	    const e=this.state.getCurrentSlide();
 	    if(!e)return;
+    const masterSelect=document.getElementById("select-slide-master");
+    if(masterSelect){
+      const currentValue=e.masterId||"";
+      masterSelect.innerHTML='<option value="">なし</option>'+(this.state.masters||[]).map(master=>'<option value="'+escapeHTML(master.id)+'">'+escapeHTML(master.name||master.id)+'</option>').join("");
+      masterSelect.value=currentValue;
+    }
+    const layoutSelect=document.getElementById("select-slide-layout");
+    if(layoutSelect){
+      const currentLayout=e.layoutId||"";
+      layoutSelect.innerHTML='<option value="">なし</option>'+(this.state.layouts||[]).map(layout=>'<option value="'+escapeHTML(layout.id)+'">'+escapeHTML(layout.name||layout.id)+'</option>').join("");
+      layoutSelect.value=currentLayout;
+    }
     const n=e.background||{type:"color",value:"#1e1e24"};
     document.getElementById("select-bg-type").value=n.type||"color";
     const i=document.getElementById("bg-value-color"),t=document.getElementById("bg-value-gradient"),s=document.getElementById("bg-value-image");
@@ -2233,9 +2681,54 @@ class A {
     document.getElementById("input-slide-bg-color").addEventListener("change",i=>n({value:i.target.value}));
     document.getElementById("input-slide-bg-gradient").addEventListener("change",i=>n({value:i.target.value}));
     document.getElementById("input-slide-bg-image").addEventListener("change",i=>n({value:i.target.value}));
+    document.getElementById("select-slide-master").addEventListener("change",i=>this.state.setCurrentSlideMaster(i.target.value));
+    document.getElementById("btn-create-master-from-slide").addEventListener("click",()=>{
+      const name=safePrompt("マスター名を入力してください","会社テンプレート");
+      if(name===null)return;
+      const master=this.state.createMasterFromCurrentSlide(name.trim()||"会社テンプレート",true);
+      master&&alert("マスターを作成しました。");
+    });
+    document.getElementById("btn-apply-master-all").addEventListener("click",()=>{
+      const masterId=document.getElementById("select-slide-master").value;
+      if(!masterId){alert("適用するマスターを選択してください。");return;}
+      safeConfirm("選択中のマスターを全スライドに適用しますか？")&&this.state.applyMaster(masterId,"all");
+    });
+    document.getElementById("select-slide-layout").addEventListener("change",i=>{
+      const slide=this.state.getCurrentSlide();
+      if(slide) slide.layoutId=i.target.value||null;
+      this.state.saveToStorage();
+      this.state.notify("layoutSelect", { layoutId: i.target.value || null });
+    });
+    document.getElementById("btn-create-layout-from-slide").addEventListener("click",()=>{
+      const name=safePrompt("レイアウト名を入力してください","カスタムレイアウト");
+      if(name===null)return;
+      const layout=this.state.createLayoutFromCurrentSlide(name.trim()||"カスタムレイアウト");
+      layout&&alert("レイアウトを作成しました。");
+    });
+    document.getElementById("btn-apply-layout-current").addEventListener("click",()=>{
+      const layoutId=document.getElementById("select-slide-layout").value;
+      if(!layoutId){alert("適用するレイアウトを選択してください。");return;}
+      safeConfirm("現在のスライド内容を選択中のレイアウトで置き換えますか？")&&this.state.applyLayout(layoutId,"current");
+    });
     
-    document.getElementById("btn-new-project").addEventListener("click",()=>{confirm("現在のプロジェクトを破棄して新規作成しますか？")&&this.state.newProject()});
+    document.getElementById("btn-new-project").addEventListener("click",()=>{safeConfirm("現在のプロジェクトを破棄して新規作成しますか？")&&this.state.newProject()});
     document.getElementById("btn-export-json").addEventListener("click",()=>this.exporter.exportJSON());
+    document.getElementById("btn-save-master").addEventListener("click",()=>this.exporter.exportMasterJSON());
+    document.getElementById("input-import-master").addEventListener("change",i=>{
+      const t=i.target.files[0];
+      if(!t)return;
+      const s=new FileReader;
+      s.onload=r=>{
+        try{
+          const u=JSON.parse(r.target.result);
+          this.state.importMasterProject(u)?alert("マスターを読み込みました"):(console.log("Master import failed:",u),alert("無効なマスターJSONです"));
+        }catch{
+          alert("マスターJSONの解析に失敗しました");
+        }
+        i.target.value="";
+      };
+      s.readAsText(t);
+    });
     document.getElementById("input-import-json").addEventListener("change",i=>{
       const t=i.target.files[0];
       if(!t)return;
@@ -2264,6 +2757,9 @@ class A {
 // PLAYER MODE INITIALIZATION
 // ----------------------------------------------------
 let playerSlides = [];
+let playerMasters = [];
+let playerTheme = {};
+let playerDefaultMasterId = null;
 let playerCurrentIdx = 0;
 let playerScale = 1;
 
@@ -2274,15 +2770,50 @@ function initializePlayer() {
   // Show player layout
   const playerView = document.getElementById("player-view");
   playerView.style.display = "flex";
+  const urlParams = new URLSearchParams(window.location.search);
+  activePresentationSessionId = urlParams.get("pid") || null;
 
-  // Load from local storage
+  const handlePlayerMessage = data => {
+    if (!messageMatchesPresentation(data)) return;
+    if (data && data.type === "INIT_PRESENTATION") {
+      if (data.payload && Array.isArray(data.payload.slides)) {
+        playerSlides = data.payload.slides;
+        playerMasters = data.payload.masters || [];
+        playerTheme = data.payload.theme || {};
+        playerDefaultMasterId = data.payload.defaultMasterId || null;
+        const idx = parseInt(new URLSearchParams(window.location.search).get("index"), 10);
+        if (!isNaN(idx) && idx >= 0 && idx < playerSlides.length) playerCurrentIdx = idx;
+        renderPlayerSlide();
+      }
+    } else if (data && data.type === "SLIDE_CHANGE") {
+      playerCurrentIdx = data.index;
+      renderPlayerSlide();
+    } else if (data && data.type === "PROJECT_UPDATE") {
+      if (activePresentationSessionId) return;
+      playerSlides = data.slides;
+      playerMasters = data.masters || [];
+      playerTheme = data.theme || {};
+      playerDefaultMasterId = data.defaultMasterId || null;
+      renderPlayerSlide();
+    } else if (data && data.type === "POINTER_TOGGLE") {
+      if (!data.enabled) hidePlayerLaserPointer();
+    } else if (data && data.type === "POINTER_MOVE") {
+      updatePlayerLaserPointer(data.x, data.y);
+    } else if (data && data.type === "POINTER_LEAVE") {
+      hidePlayerLaserPointer();
+    }
+  };
+
+  window.addEventListener("message", (event) => handlePlayerMessage(event.data || {}));
+
+  // Load current presentation snapshot first, then fall back to project storage.
   try {
-    const raw = localStorage.getItem(E);
-    if (raw) {
-      const data = JSON.parse(raw);
+    const data = (activePresentationSessionId ? readLocalStorageJSON(presentationStorageKey(activePresentationSessionId)) : null) || readLocalStorageJSON(E);
       if (data && Array.isArray(data.slides)) {
         playerSlides = data.slides;
-      }
+        playerMasters = data.masters || [];
+        playerTheme = data.theme || {};
+        playerDefaultMasterId = data.defaultMasterId || null;
     }
   } catch (err) {
     console.error("Player loading failed", err);
@@ -2293,7 +2824,6 @@ function initializePlayer() {
   }
 
   // Load start index from URL
-  const urlParams = new URLSearchParams(window.location.search);
   const indexParam = urlParams.get("index");
   if (indexParam !== null) {
     const startIdx = parseInt(indexParam, 10);
@@ -2304,7 +2834,7 @@ function initializePlayer() {
 
   // Notify presenter when player window closes
   window.addEventListener("beforeunload", () => {
-    syncChannel.postMessage({ type: "PLAYER_CLOSED" });
+    postPresentationMessage({ type: "PLAYER_CLOSED" });
   });
 
   // Key navigation
@@ -2323,24 +2853,17 @@ function initializePlayer() {
 
   // Listen to BroadCastChannel sync
   syncChannel.addEventListener("message", (event) => {
-    if (event.data && event.data.type === "SLIDE_CHANGE") {
-      playerCurrentIdx = event.data.index;
-      renderPlayerSlide();
-    } else if (event.data && event.data.type === "PROJECT_UPDATE") {
-      playerSlides = event.data.slides;
-      renderPlayerSlide();
-    } else if (event.data && event.data.type === "POINTER_TOGGLE") {
-      event.data.enabled ? null : hidePlayerLaserPointer();
-    } else if (event.data && event.data.type === "POINTER_MOVE") {
-      updatePlayerLaserPointer(event.data.x, event.data.y);
-    } else if (event.data && event.data.type === "POINTER_LEAVE") {
-      hidePlayerLaserPointer();
-    }
+    handlePlayerMessage(event.data || {});
   });
 
   window.addEventListener("resize", updatePlayerScale);
   updatePlayerScale();
   renderPlayerSlide();
+  if (window.opener && activePresentationSessionId) {
+    try {
+      window.opener.postMessage({ type: "REQUEST_PRESENTATION", sessionId: activePresentationSessionId }, "*");
+    } catch {}
+  }
 }
 
 function updatePlayerScale() {
@@ -2358,7 +2881,7 @@ function navigatePlayer(direction) {
     playerCurrentIdx = nextIdx;
     renderPlayerSlide();
     // Sync to other windows
-    syncChannel.postMessage({ type: "SLIDE_CHANGE", index: playerCurrentIdx });
+    postPresentationMessage({ type: "SLIDE_CHANGE", index: playerCurrentIdx });
   }
 }
 
@@ -2376,9 +2899,10 @@ function renderPlayerSlide() {
   board.appendChild(pointer);
 
   const isLight = document.body.classList.contains("light-theme");
-  applyBoardBackground(board, slide.background, isLight);
+  const deck = { masters: playerMasters, theme: playerTheme, defaultMasterId: playerDefaultMasterId };
+  applyBoardBackground(board, getEffectiveSlideBackground(deck, slide), isLight);
 
-  (slide.elements || []).forEach(elem => {
+  getRenderableSlideElements(deck, slide).forEach(elem => {
     board.appendChild(renderDOMElement(elem, isLight));
   });
 
@@ -2406,6 +2930,9 @@ function hidePlayerLaserPointer() {
 // PRESENTER MODE INITIALIZATION
 // ----------------------------------------------------
 let presenterSlides = [];
+let presenterMasters = [];
+let presenterTheme = {};
+let presenterDefaultMasterId = null;
 let presenterCurrentIdx = 0;
 let timerInterval = null;
 let timerSeconds = 0;
@@ -2420,17 +2947,19 @@ function initializePresenter() {
   // Show presenter layout
   document.getElementById("presenter-view").style.display = "flex";
 
-  // Load from local storage
-  try {
-    const raw = localStorage.getItem(E);
-    if (raw) {
-      const data = JSON.parse(raw);
+  // Use the presentation snapshot already provided by the editor when available.
+  if (!presenterSlides.length) {
+    try {
+      const data = (activePresentationSessionId ? readLocalStorageJSON(presentationStorageKey(activePresentationSessionId)) : null) || readLocalStorageJSON(E);
       if (data && Array.isArray(data.slides)) {
         presenterSlides = data.slides;
+        presenterMasters = data.masters || [];
+        presenterTheme = data.theme || {};
+        presenterDefaultMasterId = data.defaultMasterId || null;
       }
+    } catch (err) {
+      console.error("Presenter loading failed", err);
     }
-  } catch (err) {
-    console.error("Presenter loading failed", err);
   }
 
   if (presenterSlides.length === 0) {
@@ -2469,17 +2998,28 @@ function initializePresenter() {
   const pointerToggle = document.getElementById("btn-pointer-toggle");
   if (pointerToggle) pointerToggle.addEventListener("click", togglePresenterPointer);
 
-  // Sync to other windows
-  syncChannel.addEventListener("message", (event) => {
-    if (event.data && event.data.type === "SLIDE_CHANGE") {
-      presenterCurrentIdx = event.data.index;
+  const handlePresenterMessage = data => {
+    if (!messageMatchesPresentation(data)) return;
+    if (data && data.type === "SLIDE_CHANGE") {
+      presenterCurrentIdx = data.index;
       renderPresenterSlides();
-    } else if (event.data && event.data.type === "PROJECT_UPDATE") {
-      presenterSlides = event.data.slides;
+    } else if (data && data.type === "PROJECT_UPDATE") {
+      if (activePresentationSessionId) return;
+      presenterSlides = data.slides;
+      presenterMasters = data.masters || [];
+      presenterTheme = data.theme || {};
+      presenterDefaultMasterId = data.defaultMasterId || null;
       renderPresenterSlides();
-    } else if (event.data && event.data.type === "PLAYER_CLOSED") {
+    } else if (data && data.type === "PLAYER_CLOSED") {
       exitPresenterMode();
     }
+  };
+
+  window.addEventListener("message", (event) => handlePresenterMessage(event.data || {}));
+
+  // Sync to other windows
+  syncChannel.addEventListener("message", (event) => {
+    handlePresenterMessage(event.data || {});
   });
 
   // Laser pointer interactive area setup
@@ -2496,11 +3036,11 @@ function initializePresenter() {
       const logicalY = Math.round(yRatio * x);
 
       // Broadcast pointer position
-      syncChannel.postMessage({ type: "POINTER_MOVE", x: logicalX, y: logicalY });
+      postPresentationMessage({ type: "POINTER_MOVE", x: logicalX, y: logicalY });
     });
 
     currentPreviewWrapper.addEventListener("mouseleave", () => {
-      if (presenterPointerEnabled) syncChannel.postMessage({ type: "POINTER_LEAVE" });
+      if (presenterPointerEnabled) postPresentationMessage({ type: "POINTER_LEAVE" });
     });
   }
 
@@ -2543,8 +3083,8 @@ function togglePresenterPointer() {
     btn.innerText = presenterPointerEnabled ? "レーザーポインタ ON" : "レーザーポインタ OFF";
   }
   if (currentBoard) currentBoard.classList.toggle("pointer-source-active", presenterPointerEnabled);
-  syncChannel.postMessage({ type: "POINTER_TOGGLE", enabled: presenterPointerEnabled });
-  if (!presenterPointerEnabled) syncChannel.postMessage({ type: "POINTER_LEAVE" });
+  postPresentationMessage({ type: "POINTER_TOGGLE", enabled: presenterPointerEnabled });
+  if (!presenterPointerEnabled) postPresentationMessage({ type: "POINTER_LEAVE" });
 }
 
 function exitPresenterMode() {
@@ -2631,8 +3171,8 @@ function navigatePresenter(direction) {
   if (nextIdx >= 0 && nextIdx < presenterSlides.length) {
     presenterCurrentIdx = nextIdx;
     renderPresenterSlides();
-    syncChannel.postMessage({ type: "SLIDE_CHANGE", index: presenterCurrentIdx });
-    if (presenterPointerEnabled) syncChannel.postMessage({ type: "POINTER_LEAVE" });
+    postPresentationMessage({ type: "SLIDE_CHANGE", index: presenterCurrentIdx });
+    if (presenterPointerEnabled) postPresentationMessage({ type: "POINTER_LEAVE" });
   }
 }
 
@@ -2646,8 +3186,9 @@ function renderPresenterSlides() {
     currentBoard.innerHTML = "";
     if (currentSlide) {
       const isLight = document.body.classList.contains("light-theme");
-      applyBoardBackground(currentBoard, currentSlide.background, isLight);
-      (currentSlide.elements || []).forEach(elem => {
+      const deck = { masters: presenterMasters, theme: presenterTheme, defaultMasterId: presenterDefaultMasterId };
+      applyBoardBackground(currentBoard, getEffectiveSlideBackground(deck, currentSlide), isLight);
+      getRenderableSlideElements(deck, currentSlide).forEach(elem => {
         currentBoard.appendChild(renderDOMElement(elem, isLight));
       });
     }
@@ -2659,8 +3200,9 @@ function renderPresenterSlides() {
     nextBoard.innerHTML = "";
     if (nextSlide) {
       const isLight = document.body.classList.contains("light-theme");
-      applyBoardBackground(nextBoard, nextSlide.background, isLight);
-      (nextSlide.elements || []).forEach(elem => {
+      const deck = { masters: presenterMasters, theme: presenterTheme, defaultMasterId: presenterDefaultMasterId };
+      applyBoardBackground(nextBoard, getEffectiveSlideBackground(deck, nextSlide), isLight);
+      getRenderableSlideElements(deck, nextSlide).forEach(elem => {
         nextBoard.appendChild(renderDOMElement(elem, isLight));
       });
     } else {
@@ -2717,6 +3259,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const urlParams = new URLSearchParams(window.location.search);
   const mode = urlParams.get("mode");
 
+  window.addEventListener("message", event => {
+    const data = event.data || {};
+    if (data.type !== "REQUEST_PRESENTATION") return;
+    if (activePresentationSessionId && data.sessionId && data.sessionId !== activePresentationSessionId) return;
+    sendPresentationSnapshot(event.source || window.playerWindow);
+  });
+
   if (mode === "player") {
     initializePlayer();
     return;
@@ -2725,7 +3274,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
-  console.log("SlideCraft v1.7.1 Initializing in Editor Mode...");
+  console.log("SlideCraft v1.7.4 Initializing in Editor Mode...");
   window.appState = new I();
   const f = window.appState;
   const e = new w(f, "slide-canvas", "canvas-wrapper");
@@ -3071,6 +3620,9 @@ body {
 .sidebar-actions {
   padding: 12px;
   border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .slide-list-scroll {
   flex: 1;
@@ -4025,6 +4577,16 @@ input[type=color]::-webkit-color-swatch {
           </button>
           <input type="file" id="input-import-json" accept="application/json" style="display:none">
           <div class="menu-divider"></div>
+          <button id="btn-save-master" class="menu-dropdown-item">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+            マスター保存
+          </button>
+          <button id="btn-load-master-trigger" class="menu-dropdown-item" onclick="document.getElementById('input-import-master').click()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            マスター読込
+          </button>
+          <input type="file" id="input-import-master" accept="application/json" style="display:none">
+          <div class="menu-divider"></div>
           <button id="btn-export-html" class="menu-dropdown-item primary">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path><polyline points="16 16 12 12 8 16"></polyline></svg>
             HTML出力 (単一ファイル)
@@ -4040,7 +4602,7 @@ input[type=color]::-webkit-color-swatch {
         </div>
       </div>
       <h1 class="logo-text">SlideCraft</h1>
-      <span class="logo-badge">v1.7.1</span>
+      <span class="logo-badge">v1.7.4</span>
     </div>
 
     <div class="toolbar-section add-tools">
@@ -4113,6 +4675,9 @@ input[type=color]::-webkit-color-swatch {
   <div id="app-workspace">
     <aside id="slide-sidebar">
       <div class="sidebar-actions">
+        <select id="select-add-layout" class="form-select" title="追加するスライドのレイアウト">
+          <option value="">標準</option>
+        </select>
         <button id="add-slide-btn" class="action-btn-main">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           スライドを追加
@@ -4383,6 +4948,30 @@ input[type=color]::-webkit-color-swatch {
       <div id="slide-inspector">
         <div class="inspector-header">スライド背景設定</div>
         <div class="inspector-body">
+          <div class="inspector-section">
+            <span class="inspector-label">スライドマスター</span>
+            <select id="select-slide-master" class="form-select">
+              <option value="">なし</option>
+            </select>
+            <div class="btn-group mt-8">
+              <button id="btn-create-master-from-slide" class="tool-btn secondary text-btn compact" title="現在のスライドをマスター化">現在から作成</button>
+              <button id="btn-apply-master-all" class="tool-btn secondary text-btn compact" title="選択中のマスターを全スライドへ適用">全体へ適用</button>
+            </div>
+            <span class="form-help">作成時は現在スライドの背景と要素をマスターへ移し、スライドJSONにも同梱します。</span>
+          </div>
+
+          <div class="inspector-section">
+            <span class="inspector-label">ページレイアウト</span>
+            <select id="select-slide-layout" class="form-select">
+              <option value="">なし</option>
+            </select>
+            <div class="btn-group mt-8">
+              <button id="btn-create-layout-from-slide" class="tool-btn secondary text-btn compact" title="現在のスライドをレイアウトとして保存">現在から作成</button>
+              <button id="btn-apply-layout-current" class="tool-btn secondary text-btn compact" title="選択中のレイアウトを現在スライドへ再適用">再適用</button>
+            </div>
+            <span class="form-help">タイトルページ、目次ページ、通常ページ、裏表紙などをスライド追加時に選べます。</span>
+          </div>
+
           <div class="inspector-section">
             <span class="inspector-label">背景の種類</span>
             <select id="select-bg-type" class="form-select">
