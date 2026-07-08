@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=Outfit:wght@400;600;700&family=Playfair+Display:ital,wght@0,600;0,700;1,600;1,700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.14.0/dist/mermaid.min.js"></script>
   <script>
 /* html2canvas 1.4.1 */
 /*!
@@ -454,7 +455,8 @@ function presentationStorageKey(sessionId) {
 }
 
 function messageMatchesPresentation(data) {
-  return !activePresentationSessionId || !data || !data.sessionId || data.sessionId === activePresentationSessionId;
+  if (!activePresentationSessionId) return true;
+  return !!data && data.sessionId === activePresentationSessionId;
 }
 
 function postPresentationMessage(message) {
@@ -745,7 +747,7 @@ function toPPTXColor(value, fallback = "FFFFFF") {
 
 const PPTX_FONT_SCALE = 72 / 128;
 const SLIDE_CLIPBOARD_TYPE = "slidecraft-slide";
-const SLIDE_CLIPBOARD_VERSION = "1.8.3";
+const SLIDE_CLIPBOARD_VERSION = "1.9.0";
 const SLIDE_CLIPBOARD_STORAGE_KEY = "slidecraft_slide_clipboard";
 
 function cloneJSON(value) {
@@ -864,6 +866,264 @@ function getRenderableSlideElements(source, slide) {
   return masterElements.concat(Array.isArray(slide && slide.elements) ? slide.elements : []);
 }
 
+function renderSVGChart(elem) {
+  const container = document.createElement("div");
+  container.style.width = "100%";
+  container.style.height = "100%";
+  container.style.display = "flex";
+  container.style.flexDirection = "column";
+  container.style.alignItems = "center";
+  container.style.justifyContent = "center";
+  container.style.overflow = "hidden";
+  
+  const type = elem.style?.chartType || "bar";
+  const color = elem.style?.chartColor || "#6366f1";
+  const showLegend = elem.style?.showLegend !== false;
+  
+  const rawData = elem.content || "";
+  const lines = rawData.split("\n").map(l => l.trim()).filter(l => l && l.includes(","));
+  const data = lines.map(line => {
+    const parts = line.split(",");
+    const label = parts[0].trim();
+    const val = parseFloat(parts[1]) || 0;
+    return { label, value: val };
+  });
+  
+  if (data.length === 0) {
+    container.innerHTML = `<div style="color:#888;font-size:14px;padding:8px;">グラフデータがありません（ラベル,値 の形式）</div>`;
+    return container;
+  }
+  
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "100%");
+  svg.setAttribute("viewBox", `0 0 400 300`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  
+  const maxVal = Math.max(...data.map(d => d.value), 1);
+  
+  if (type === "bar") {
+    const chartHeight = 220;
+    const chartWidth = 320;
+    const barPadding = 10;
+    const barWidth = (chartWidth / data.length) - barPadding;
+    
+    const axisY = 240;
+    const axisX = 60;
+    
+    const axis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    axis.setAttribute("x1", axisX);
+    axis.setAttribute("y1", 20);
+    axis.setAttribute("x2", axisX);
+    axis.setAttribute("y2", axisY);
+    axis.setAttribute("stroke", "#4b5563");
+    axis.setAttribute("stroke-width", "2");
+    svg.appendChild(axis);
+    
+    const axisH = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    axisH.setAttribute("x1", axisX);
+    axisH.setAttribute("y1", axisY);
+    axisH.setAttribute("x2", axisX + chartWidth);
+    axisH.setAttribute("y2", axisY);
+    axisH.setAttribute("stroke", "#4b5563");
+    axisH.setAttribute("stroke-width", "2");
+    svg.appendChild(axisH);
+    
+    data.forEach((d, i) => {
+      const x = axisX + barPadding/2 + i * (barWidth + barPadding);
+      const valHeight = (d.value / maxVal) * (chartHeight - 40);
+      const y = axisY - valHeight;
+      
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", x);
+      rect.setAttribute("y", y);
+      rect.setAttribute("width", barWidth);
+      rect.setAttribute("height", valHeight);
+      rect.setAttribute("fill", color);
+      rect.setAttribute("rx", "4");
+      svg.appendChild(rect);
+      
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute("x", x + barWidth / 2);
+      text.setAttribute("y", axisY + 18);
+      text.setAttribute("fill", "#9ca3af");
+      text.setAttribute("font-size", "11");
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = d.label;
+      svg.appendChild(text);
+      
+      const valText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      valText.setAttribute("x", x + barWidth / 2);
+      valText.setAttribute("y", y - 6);
+      valText.setAttribute("fill", "#ffffff");
+      valText.setAttribute("font-size", "11");
+      valText.setAttribute("font-weight", "bold");
+      valText.setAttribute("text-anchor", "middle");
+      valText.textContent = d.value;
+      svg.appendChild(valText);
+    });
+  }
+  else if (type === "pie") {
+    const cx = 200;
+    const cy = 120;
+    const r = 80;
+    const total = data.reduce((sum, d) => sum + d.value, 0);
+    
+    let startAngle = 0;
+    const colors = [
+      color,
+      "#10b981", "#f59e0b", "#ef4444", "#3b82f6", "#8b5cf6", "#ec4899", "#14b8a6"
+    ];
+    
+    data.forEach((d, i) => {
+      const sliceAngle = (d.value / total) * 360;
+      const endAngle = startAngle + sliceAngle;
+      
+      const radStart = ((startAngle - 90) * Math.PI) / 180;
+      const radEnd = ((endAngle - 90) * Math.PI) / 180;
+      
+      const x1 = cx + r * Math.cos(radStart);
+      const y1 = cy + r * Math.sin(radStart);
+      const x2 = cx + r * Math.cos(radEnd);
+      const y2 = cy + r * Math.sin(radEnd);
+      
+      const largeArc = sliceAngle > 180 ? 1 : 0;
+      
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const dAttr = `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+      path.setAttribute("d", dAttr);
+      path.setAttribute("fill", colors[i % colors.length]);
+      path.setAttribute("stroke", "#1e1e24");
+      path.setAttribute("stroke-width", "2");
+      svg.appendChild(path);
+      
+      if (sliceAngle > 15) {
+        const midRad = (((startAngle + sliceAngle / 2) - 90) * Math.PI) / 180;
+        const tx = cx + (r * 0.6) * Math.cos(midRad);
+        const ty = cy + (r * 0.6) * Math.sin(midRad);
+        
+        const pctText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        pctText.setAttribute("x", tx);
+        pctText.setAttribute("y", ty + 4);
+        pctText.setAttribute("fill", "#ffffff");
+        pctText.setAttribute("font-size", "10");
+        pctText.setAttribute("font-weight", "bold");
+        pctText.setAttribute("text-anchor", "middle");
+        pctText.textContent = Math.round((d.value / total) * 100) + "%";
+        svg.appendChild(pctText);
+      }
+      
+      startAngle = endAngle;
+    });
+    
+    if (showLegend) {
+      const legendContainer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      legendContainer.setAttribute("transform", "translate(40, 220)");
+      
+      let lx = 0;
+      let ly = 0;
+      data.forEach((d, i) => {
+        if (lx > 300) {
+          lx = 0;
+          ly += 18;
+        }
+        
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", lx);
+        rect.setAttribute("y", ly);
+        rect.setAttribute("width", "12");
+        rect.setAttribute("height", "12");
+        rect.setAttribute("fill", colors[i % colors.length]);
+        rect.setAttribute("rx", "2");
+        legendContainer.appendChild(rect);
+        
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("x", lx + 16);
+        text.setAttribute("y", ly + 10);
+        text.setAttribute("fill", "#cbd5e1");
+        text.setAttribute("font-size", "11");
+        text.textContent = `${d.label} (${d.value})`;
+        legendContainer.appendChild(text);
+        
+        lx += d.label.length * 7 + 55;
+      });
+      svg.appendChild(legendContainer);
+    }
+  }
+  else if (type === "line") {
+    const chartHeight = 200;
+    const chartWidth = 320;
+    const axisY = 230;
+    const axisX = 60;
+    
+    const axis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    axis.setAttribute("x1", axisX);
+    axis.setAttribute("y1", 20);
+    axis.setAttribute("x2", axisX);
+    axis.setAttribute("y2", axisY);
+    axis.setAttribute("stroke", "#4b5563");
+    axis.setAttribute("stroke-width", "2");
+    svg.appendChild(axis);
+    
+    const axisH = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    axisH.setAttribute("x1", axisX);
+    axisH.setAttribute("y1", axisY);
+    axisH.setAttribute("x2", axisX + chartWidth);
+    axisH.setAttribute("y2", axisY);
+    axisH.setAttribute("stroke", "#4b5563");
+    axisH.setAttribute("stroke-width", "2");
+    svg.appendChild(axisH);
+    
+    const stepX = chartWidth / (data.length - 1 || 1);
+    let pointsAttr = "";
+    
+    data.forEach((d, i) => {
+      const x = axisX + i * stepX;
+      const y = axisY - (d.value / maxVal) * (chartHeight - 40);
+      
+      pointsAttr += `${x},${y} `;
+      
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute("x", x);
+      text.setAttribute("y", axisY + 18);
+      text.setAttribute("fill", "#9ca3af");
+      text.setAttribute("font-size", "11");
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = d.label;
+      svg.appendChild(text);
+      
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("cx", x);
+      circle.setAttribute("cy", y);
+      circle.setAttribute("r", "5");
+      circle.setAttribute("fill", color);
+      circle.setAttribute("stroke", "#1e1e24");
+      circle.setAttribute("stroke-width", "2");
+      svg.appendChild(circle);
+      
+      const valText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      valText.setAttribute("x", x);
+      valText.setAttribute("y", y - 10);
+      valText.setAttribute("fill", "#ffffff");
+      valText.setAttribute("font-size", "10");
+      valText.setAttribute("font-weight", "bold");
+      valText.setAttribute("text-anchor", "middle");
+      valText.textContent = d.value;
+      svg.appendChild(valText);
+    });
+    
+    const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    polyline.setAttribute("points", pointsAttr.trim());
+    polyline.setAttribute("fill", "none");
+    polyline.setAttribute("stroke", color);
+    polyline.setAttribute("stroke-width", "3");
+    svg.insertBefore(polyline, svg.querySelector("circle"));
+  }
+  
+  container.appendChild(svg);
+  return container;
+}
+
 // Helper function to render a slide element to a DOM container (used by Player/Presenter/Print)
 function renderDOMElement(elem, isLight, pageContext) {
   const wrapper = document.createElement("div");
@@ -958,6 +1218,61 @@ function renderDOMElement(elem, isLight, pageContext) {
     inner.appendChild(frame);
   } else if (elem.type === "table") {
     inner.appendChild(renderTableElement(elem, false));
+  } else if (elem.type === "chart") {
+    inner.appendChild(renderSVGChart(elem));
+  } else if (elem.type === "mermaid") {
+    const container = document.createElement("div");
+    container.className = "mermaid-container";
+    container.style.width = "100%";
+    container.style.height = "100%";
+    container.style.overflow = "hidden";
+    
+    if (elem.svg) {
+      container.innerHTML = elem.svg;
+      const svgEl = container.querySelector("svg");
+      if (svgEl) {
+        svgEl.setAttribute("width", "100%");
+        svgEl.setAttribute("height", "100%");
+        svgEl.style.maxWidth = "100%";
+        svgEl.style.maxHeight = "100%";
+      }
+    } else {
+      container.innerHTML = `<pre style="font-size:12px;color:#888;">${escapeHTML(elem.content)}</pre>`;
+      const uniqueId = "mermaid-" + Math.random().toString(36).substr(2, 9);
+      setTimeout(() => {
+        if (typeof mermaid !== "undefined") {
+          try {
+            mermaid.render(uniqueId, elem.content || "").then(({ svg }) => {
+              container.innerHTML = svg;
+              const svgEl = container.querySelector("svg");
+              if (svgEl) {
+                svgEl.setAttribute("width", "100%");
+                svgEl.setAttribute("height", "100%");
+                svgEl.style.maxWidth = "100%";
+                svgEl.style.maxHeight = "100%";
+              }
+              if (window.appState && typeof window.appState.saveToStorage === "function") {
+                const targetSlide = window.appState.slides.find(s => s && s.elements && s.elements.some(el => el.id === elem.id));
+                if (targetSlide) {
+                  const targetEl = targetSlide.elements.find(el => el.id === elem.id);
+                  if (targetEl) {
+                    targetEl.svg = svg;
+                    window.appState.saveToStorage();
+                  }
+                }
+              }
+            }).catch(err => {
+              container.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px;white-space:pre-wrap;">Mermaid Error: ${escapeHTML(err.message || String(err))}</div>`;
+            });
+          } catch (err) {
+            container.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px;">Mermaid Rendering Failed</div>`;
+          }
+        } else {
+          container.innerHTML = `<div style="color:#eab308;font-size:12px;padding:8px;">Mermaid library not loaded</div>`;
+        }
+      }, 50);
+    }
+    inner.appendChild(container);
   }
   wrapper.appendChild(inner);
   return wrapper;
@@ -979,18 +1294,20 @@ function applyBoardBackground(board, bg, isLight) {
 
 class I {
   constructor() {
-	    this.slides = [];
-	    this.theme = {};
-	    this.masters = [];
-	    this.layouts = [];
-	    this.defaultMasterId = null;
-	    this.defaultLayoutId = null;
-	    this.currentSlideId = null;
-	    this.selectedElementId = null;
-	    this.selectedElementIds = [];
+    this.projectId = localStorage.getItem("slidecraft_active_project_id") || "default";
+    this.projectName = localStorage.getItem(`slidecraft_project_name_${this.projectId}`) || (this.projectId === "default" ? "デフォルトプロジェクト" : "無題のプロジェクト");
+    this.slides = [];
+    this.theme = {};
+    this.masters = [];
+    this.layouts = [];
+    this.defaultMasterId = null;
+    this.defaultLayoutId = null;
+    this.currentSlideId = null;
+    this.selectedElementId = null;
+    this.selectedElementIds = [];
     this.undoStack = [];
-	    this.redoStack = [];
-	    this.maxHistorySize = 50;
+    this.redoStack = [];
+    this.maxHistorySize = 50;
     this.clipboard = null;
     this.listeners = new Set();
     this.loadFromStorage();
@@ -1450,7 +1767,7 @@ class I {
   exportMasterJSON() {
     this.ensureDefaultLayouts(this.defaultMasterId);
     return {
-      version: "1.8.3",
+      version: "1.9.0",
       type: "slidecraft-template",
       theme: cloneJSON(this.theme || {}),
       masters: cloneJSON(this.masters || []),
@@ -1468,7 +1785,7 @@ class I {
       layouts: this.layouts || [],
       defaultMasterId: this.defaultMasterId,
       defaultLayoutId: this.defaultLayoutId,
-      version: "1.8.3"
+      version: "1.9.0"
     };
   }
   updateSlideNotes(slideId, notesText, isDirect = false) {
@@ -1595,7 +1912,28 @@ class I {
 	        ["行 1", "", ""],
 	        ["行 2", "", ""]
 	      ];
-	      t.style = { backgroundColor: "#111827", header: true, headerColor: "#3730a3", headerTextColor: "#ffffff", headerFontSize: 18, headerTextAlign: "left", color: "#ffffff", fontSize: 18, textAlign: "left", fontFamily: "Inter, sans-serif", borderWidth: 1, borderColor: "#94a3b8", borderStyle: "solid" };
+	    } else if (e === "chart") {
+	      t.width = 600;
+	      t.height = 400;
+	      t.content = "製品A,120\n製品B,200\n製品C,150";
+	      t.style = { chartType: "bar", chartColor: "#6366f1", showLegend: true };
+	    } else if (e === "mermaid") {
+	      t.width = 600;
+	      t.height = 400;
+	      t.content = "graph TD\n  A[開始] --> B(処理)\n  B --> C[終了]";
+	      t.style = { backgroundColor: "transparent" };
+	      setTimeout(() => {
+	        if (typeof mermaid !== "undefined") {
+	          const uniqueId = "mermaid-init-" + Math.random().toString(36).substr(2, 9);
+	          try {
+	            mermaid.render(uniqueId, t.content).then(({ svg }) => {
+	              this.updateElement(t.id, { svg: svg });
+	            }).catch(err => console.warn(err));
+	          } catch (err) {
+	            console.warn(err);
+	          }
+	        }
+	      }, 50);
 	    }
     n.x && (t.x = n.x);
     n.y && (t.y = n.y);
@@ -1843,9 +2181,193 @@ class I {
     });
     return i;
   }
+  createSlidesFromMarkdown(mdText, appendMode = false) {
+    if (!mdText || typeof mdText !== "string") return false;
+    
+    // Split slide sections by --- (with optional whitespaces)
+    const slideTexts = mdText.split(/\n\s*---\s*\n/);
+    const newSlides = [];
+    const makeId = prefix => prefix + "-" + Math.random().toString(36).substr(2, 9);
+    
+    slideTexts.forEach((slideText, idx) => {
+      const slideId = makeId("slide");
+      const elements = [];
+      let notes = "";
+      
+      const lines = slideText.split("\n");
+      let title = "";
+      const bullets = [];
+      const normalTexts = [];
+      let imageUrl = "";
+      let imageAlt = "";
+      
+      lines.forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        
+        // H1 header
+        if (trimmed.startsWith("# ")) {
+          title = trimmed.slice(2).trim();
+        }
+        // Image syntax: ![alt](url)
+        else if (trimmed.startsWith("![") && trimmed.includes("](") && trimmed.endsWith(")")) {
+          const altEnd = trimmed.indexOf("](");
+          imageAlt = trimmed.slice(2, altEnd).trim();
+          imageUrl = trimmed.slice(altEnd + 2, trimmed.length - 1).trim();
+        }
+        // Bullets
+        else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+          bullets.push(trimmed.slice(2).trim());
+        }
+        // Speaker notes comment: <!-- notes -->
+        else if (trimmed.startsWith("<!--") && trimmed.includes("-->")) {
+          const commentContent = trimmed.replace("<!--", "").replace("-->", "").trim();
+          notes += commentContent + "\n";
+        }
+        else {
+          normalTexts.push(trimmed);
+        }
+      });
+      
+      notes = notes.trim();
+      
+      // Auto layout rules
+      const isTitleSlide = (idx === 0 && !appendMode) || (bullets.length === 0 && !imageUrl && normalTexts.length <= 2);
+      
+      if (isTitleSlide) {
+        if (title) {
+          elements.push({
+            id: makeId("elem"),
+            type: "text",
+            x: 100,
+            y: 220,
+            width: 1080,
+            height: 160,
+            content: title,
+            style: { fontSize: 56, color: "#ffffff", fontWeight: "bold", fontStyle: "normal", textDecoration: "none", textAlign: "center", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
+          });
+        }
+        const subtitle = normalTexts.join("\n") || (bullets.length > 0 ? bullets.join("\n") : "");
+        if (subtitle) {
+          elements.push({
+            id: makeId("elem"),
+            type: "text",
+            x: 140,
+            y: 400,
+            width: 1000,
+            height: 120,
+            content: subtitle,
+            style: { fontSize: 24, color: "#cbd5e1", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", textAlign: "center", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
+          });
+        }
+      } else {
+        if (title) {
+          elements.push({
+            id: makeId("elem"),
+            type: "text",
+            x: 80,
+            y: 60,
+            width: 1120,
+            height: 80,
+            content: title,
+            style: { fontSize: 38, color: "#ffffff", fontWeight: "bold", fontStyle: "normal", textDecoration: "none", textAlign: "left", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
+          });
+        }
+        
+        let textContent = "";
+        if (bullets.length > 0) {
+          textContent = bullets.map(b => "・ " + b).join("\n");
+        } else if (normalTexts.length > 0) {
+          textContent = normalTexts.join("\n");
+        }
+        
+        if (imageUrl) {
+          if (textContent) {
+            elements.push({
+              id: makeId("elem"),
+              type: "text",
+              x: 80,
+              y: 180,
+              width: 560,
+              height: 440,
+              content: textContent,
+              style: { fontSize: 24, color: "#e5e7eb", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", textAlign: "left", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
+            });
+          }
+          elements.push({
+            id: makeId("elem"),
+            type: "image",
+            x: 680,
+            y: 180,
+            width: 520,
+            height: 390,
+            content: imageUrl,
+            style: { borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.1)", borderStyle: "solid" }
+          });
+        } else {
+          if (textContent) {
+            elements.push({
+              id: makeId("elem"),
+              type: "text",
+              x: 80,
+              y: 180,
+              width: 1120,
+              height: 440,
+              content: textContent,
+              style: { fontSize: 24, color: "#e5e7eb", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", textAlign: "left", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
+            });
+          }
+        }
+      }
+      
+      let bgValue = "#0f172a";
+      if (idx === 0 && !appendMode) {
+        bgValue = "linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%)";
+      } else if (idx % 2 === 1) {
+        bgValue = "#161622";
+      }
+      
+      newSlides.push({
+        id: slideId,
+        masterId: this.defaultMasterId || null,
+        layoutId: null,
+        background: { type: bgValue.includes("gradient") ? "gradient" : "color", value: bgValue },
+        elements,
+        notes
+      });
+    });
+    
+    if (newSlides.length === 0) return false;
+    
+    this.pushCheckpoint();
+    if (appendMode && this.slides.length > 0) {
+      const currentIdx = this.slides.findIndex(s => s.id === this.currentSlideId);
+      if (currentIdx !== -1) {
+        this.slides.splice(currentIdx + 1, 0, ...newSlides);
+        this.currentSlideId = newSlides[0].id;
+      } else {
+        this.slides.push(...newSlides);
+        this.currentSlideId = newSlides[0].id;
+      }
+    } else {
+      this.slides = newSlides;
+      this.currentSlideId = newSlides[0].id;
+    }
+    
+    this.selectedElementId = null;
+    this.selectedElementIds = [];
+    this.saveToStorage();
+    this.notify("projectImport");
+    return true;
+  }
   saveToStorage() {
     try {
-      localStorage.setItem(E, JSON.stringify(this.getProjectJSON()));
+      const data = JSON.stringify(this.getProjectJSON());
+      localStorage.setItem(`slidecraft_project_data_${this.projectId}`, data);
+      if (this.projectId === "default") {
+        localStorage.setItem(E, data);
+      }
+      this.updateProjectInList();
       syncChannel.postMessage({ type: "PROJECT_UPDATE", slides: this.slides, masters: this.masters, layouts: this.layouts, theme: this.theme, defaultMasterId: this.defaultMasterId, defaultLayoutId: this.defaultLayoutId });
     } catch (e) {
       console.error("Save failed", e);
@@ -1853,9 +2375,17 @@ class I {
   }
   loadFromStorage() {
     try {
-      const e = localStorage.getItem(E);
-      if (e) {
-        const n = JSON.parse(e);
+      const activeId = localStorage.getItem("slidecraft_active_project_id") || "default";
+      this.projectId = activeId;
+      this.projectName = localStorage.getItem(`slidecraft_project_name_${this.projectId}`) || (this.projectId === "default" ? "デフォルトプロジェクト" : "無題のプロジェクト");
+      
+      let data = localStorage.getItem(`slidecraft_project_data_${this.projectId}`);
+      if (!data && this.projectId === "default") {
+        data = localStorage.getItem(E);
+      }
+      
+      if (data) {
+        const n = JSON.parse(data);
         if (n && Array.isArray(n.slides) && n.slides.length > 0) {
           this.theme = n.theme && typeof n.theme === "object" ? cloneJSON(n.theme) : {};
           this.masters = Array.isArray(n.masters) ? n.masters.map(normalizeMaster).filter(Boolean) : [];
@@ -1883,6 +2413,220 @@ class I {
       console.warn("Load failed", e);
     }
     this.slides = [];
+  }
+  updateProjectInList() {
+    try {
+      const rawList = localStorage.getItem("slidecraft_project_list") || "[]";
+      let list = JSON.parse(rawList);
+      let p = list.find(item => item.id === this.projectId);
+      if (p) {
+        p.name = this.projectName;
+        p.updatedAt = Date.now();
+      } else {
+        list.push({
+          id: this.projectId,
+          name: this.projectName,
+          updatedAt: Date.now()
+        });
+      }
+      localStorage.setItem("slidecraft_project_list", JSON.stringify(list));
+    } catch (e) {
+      console.error("List update failed", e);
+    }
+  }
+  getProjectList() {
+    try {
+      const rawList = localStorage.getItem("slidecraft_project_list") || "[]";
+      let list = JSON.parse(rawList);
+      if (list.length === 0 || !list.some(item => item.id === "default")) {
+        list.unshift({
+          id: "default",
+          name: "デフォルトプロジェクト",
+          updatedAt: Date.now()
+        });
+        localStorage.setItem("slidecraft_project_list", JSON.stringify(list));
+      }
+      return list;
+    } catch {
+      return [{ id: "default", name: "デフォルトプロジェクト", updatedAt: Date.now() }];
+    }
+  }
+  switchProject(id) {
+    if (id === this.projectId) return;
+    this.projectId = id;
+    localStorage.setItem("slidecraft_active_project_id", id);
+    this.loadFromStorage();
+    if (this.slides.length === 0) {
+      this.createInitialProject();
+    }
+    this.notify("projectImport");
+  }
+  createNewProject(name = "新しいプロジェクト") {
+    const id = "proj-" + Math.random().toString(36).substr(2, 9);
+    this.projectId = id;
+    this.projectName = name;
+    localStorage.setItem("slidecraft_active_project_id", id);
+    localStorage.setItem(`slidecraft_project_name_${id}`, name);
+    const e = this.createSlide();
+    this.slides = [e];
+    this.theme = {};
+    this.masters = [];
+    this.layouts = [];
+    this.defaultMasterId = null;
+    this.defaultLayoutId = null;
+    this.currentSlideId = e.id;
+    this.selectedElementId = null;
+    this.selectedElementIds = [];
+    this.undoStack = [];
+    this.redoStack = [];
+    this.saveToStorage();
+    this.notify("projectImport");
+  }
+  renameProject(id, newName) {
+    if (!newName.trim()) return;
+    localStorage.setItem(`slidecraft_project_name_${id}`, newName);
+    if (id === this.projectId) {
+      this.projectName = newName;
+    }
+    try {
+      const rawList = localStorage.getItem("slidecraft_project_list") || "[]";
+      let list = JSON.parse(rawList);
+      let p = list.find(item => item.id === id);
+      if (p) {
+        p.name = newName;
+        p.updatedAt = Date.now();
+        localStorage.setItem("slidecraft_project_list", JSON.stringify(list));
+      }
+    } catch {}
+    this.notify("projectRename");
+  }
+  duplicateProject(id, newName = "") {
+    try {
+      const data = localStorage.getItem(`slidecraft_project_data_${id}`) || (id === "default" ? localStorage.getItem(E) : null);
+      if (!data) return false;
+      const newId = "proj-" + Math.random().toString(36).substr(2, 9);
+      const originName = localStorage.getItem(`slidecraft_project_name_${id}`) || (id === "default" ? "デフォルトプロジェクト" : "無題のプロジェクト");
+      const name = newName || `${originName} (コピー)`;
+      localStorage.setItem(`slidecraft_project_data_${newId}`, data);
+      localStorage.setItem(`slidecraft_project_name_${newId}`, name);
+      const rawList = localStorage.getItem("slidecraft_project_list") || "[]";
+      let list = JSON.parse(rawList);
+      list.push({
+        id: newId,
+        name: name,
+        updatedAt: Date.now()
+      });
+      localStorage.setItem("slidecraft_project_list", JSON.stringify(list));
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+  deleteProject(id) {
+    if (id === "default") {
+      alert("デフォルトプロジェクトは削除できません。");
+      return false;
+    }
+    this.pushCheckpoint();
+    localStorage.removeItem(`slidecraft_project_data_${id}`);
+    localStorage.removeItem(`slidecraft_project_name_${id}`);
+    try {
+      const rawList = localStorage.getItem("slidecraft_project_list") || "[]";
+      let list = JSON.parse(rawList);
+      list = list.filter(item => item.id !== id);
+      localStorage.setItem("slidecraft_project_list", JSON.stringify(list));
+    } catch {}
+    if (id === this.projectId) {
+      this.switchProject("default");
+    } else {
+      this.notify("projectDelete");
+    }
+    return true;
+  }
+  alignSelectedElements(type) {
+    const ids = this.getSelectedElementIds();
+    if (ids.length < 2) return;
+    const slide = this.getCurrentSlide();
+    if (!slide) return;
+    const elems = ids.map(id => slide.elements.find(el => el.id === id)).filter(Boolean);
+    if (elems.length < 2) return;
+    this.pushCheckpoint();
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    elems.forEach(el => {
+      if (el.x < minX) minX = el.x;
+      if (el.x + el.width > maxX) maxX = el.x + el.width;
+      if (el.y < minY) minY = el.y;
+      if (el.y + el.height > maxY) maxY = el.y + el.height;
+    });
+    elems.forEach(el => {
+      let updates = {};
+      switch (type) {
+        case "left":
+          updates.x = minX;
+          break;
+        case "centerX":
+          updates.x = Math.round((minX + maxX) / 2 - el.width / 2);
+          break;
+        case "right":
+          updates.x = maxX - el.width;
+          break;
+        case "top":
+          updates.y = minY;
+          break;
+        case "centerY":
+          updates.y = Math.round((minY + maxY) / 2 - el.height / 2);
+          break;
+        case "bottom":
+          updates.y = maxY - el.height;
+          break;
+      }
+      this.updateElement(el.id, updates, true);
+    });
+    this.saveToStorage();
+    this.notify("alignElements");
+  }
+  distributeSelectedElements(direction) {
+    const ids = this.getSelectedElementIds();
+    if (ids.length < 3) return;
+    const slide = this.getCurrentSlide();
+    if (!slide) return;
+    const elems = ids.map(id => slide.elements.find(el => el.id === id)).filter(Boolean);
+    if (elems.length < 3) return;
+    this.pushCheckpoint();
+    if (direction === "horizontal") {
+      elems.sort((a, b) => a.x - b.x);
+      const first = elems[0];
+      const last = elems[elems.length - 1];
+      const totalWidth = last.x - (first.x + first.width);
+      let middleElemsWidth = 0;
+      for (let i = 1; i < elems.length - 1; i++) {
+        middleElemsWidth += elems[i].width;
+      }
+      const gap = (totalWidth - middleElemsWidth) / (elems.length - 1);
+      let curX = first.x + first.width + gap;
+      for (let i = 1; i < elems.length - 1; i++) {
+        this.updateElement(elems[i].id, { x: Math.round(curX) }, true);
+        curX += elems[i].width + gap;
+      }
+    } else if (direction === "vertical") {
+      elems.sort((a, b) => a.y - b.y);
+      const first = elems[0];
+      const last = elems[elems.length - 1];
+      const totalHeight = last.y - (first.y + first.height);
+      let middleElemsHeight = 0;
+      for (let i = 1; i < elems.length - 1; i++) {
+        middleElemsHeight += elems[i].height;
+      }
+      const gap = (totalHeight - middleElemsHeight) / (elems.length - 1);
+      let curY = first.y + first.height + gap;
+      for (let i = 1; i < elems.length - 1; i++) {
+        this.updateElement(elems[i].id, { y: Math.round(curY) }, true);
+        curY += elems[i].height + gap;
+      }
+    }
+    this.saveToStorage();
+    this.notify("distributeElements");
   }
 }
 
@@ -1971,7 +2715,29 @@ class w {
   }
   createElementDOM(e) {
     const n = document.createElement("div");
-    n.className = "slide-element elem-" + e.type, n.style.left = e.x + "px", n.style.top = e.y + "px", n.style.width = e.width + "px", n.style.height = e.height + "px", n.style.transform = "rotate(" + (e.rotation || 0) + "deg)", n.style.transformOrigin = "center center", n.dataset.id = e.id, n.addEventListener("mousedown", t => {
+    n.className = "slide-element elem-" + e.type, n.style.left = e.x + "px", n.style.top = e.y + "px", n.style.width = e.width + "px", n.style.height = e.height + "px", n.style.transform = "rotate(" + (e.rotation || 0) + "deg)", n.style.transformOrigin = "center center", n.dataset.id = e.id;
+    
+    if (["chart", "mermaid", "iframe", "table"].includes(e.type)) {
+      n.title = "ダブルクリックして右パネルで編集します";
+      n.addEventListener("dblclick", t => {
+        t.stopPropagation();
+        if (e.type === "chart") {
+          const input = document.getElementById("input-chart-data");
+          if (input) { input.focus(); input.select(); }
+        } else if (e.type === "mermaid") {
+          const input = document.getElementById("input-mermaid-code");
+          if (input) { input.focus(); input.select(); }
+        } else if (e.type === "iframe") {
+          const input = document.getElementById("input-iframe-url");
+          if (input) { input.focus(); input.select(); }
+        } else if (e.type === "table") {
+          const input = document.getElementById("input-table-col-width");
+          if (input) { input.focus(); input.select(); }
+        }
+      });
+    }
+
+    n.addEventListener("mousedown", t => {
       t.stopPropagation();
       
 	      const currentSelectedId = this.state.selectedElementId;
@@ -1999,7 +2765,7 @@ class w {
 	      this.multiElemStart = currentSlide ? ids.map(id => currentSlide.elements.find(el => el.id === id)).filter(Boolean).map(el => ({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height })) : [];
 	    });
     const i = document.createElement("div");
-    if (i.className = "element-inner", e.style && e.type !== "shape" && e.type !== "iframe" && e.type !== "table" && (e.style.backgroundColor && (i.style.backgroundColor = e.style.backgroundColor), e.style.borderRadius && (i.style.borderRadius = e.style.borderRadius + "px"), e.style.borderWidth && (i.style.borderWidth = e.style.borderWidth + "px"), e.style.borderColor && (i.style.borderColor = e.style.borderColor), e.style.borderStyle && (i.style.borderStyle = e.style.borderStyle)), e.type === "text") {
+    if (i.className = "element-inner", e.style && e.type !== "shape" && e.type !== "iframe" && e.type !== "table" && e.type !== "chart" && e.type !== "mermaid" && (e.style.backgroundColor && (i.style.backgroundColor = e.style.backgroundColor), e.style.borderRadius && (i.style.borderRadius = e.style.borderRadius + "px"), e.style.borderWidth && (i.style.borderWidth = e.style.borderWidth + "px"), e.style.borderColor && (i.style.borderColor = e.style.borderColor), e.style.borderStyle && (i.style.borderStyle = e.style.borderStyle)), e.type === "text") {
       const t = document.createElement("div");
 		      t.className = "text-inner", t.contentEditable = "true", t.innerHTML = getTextHTML(e), e.style && (e.style.fontSize && (t.style.fontSize = e.style.fontSize + "px"), e.style.color && (t.style.color = e.style.color), e.style.fontWeight && (t.style.fontWeight = e.style.fontWeight), e.style.fontStyle && (t.style.fontStyle = e.style.fontStyle), e.style.textDecoration && (t.style.textDecoration = e.style.textDecoration), e.style.textAlign && (t.style.textAlign = e.style.textAlign), e.style.fontFamily && (t.style.fontFamily = e.style.fontFamily)), t.addEventListener("blur", () => { const r = sanitizeTextHTML(t.innerHTML); (r !== (e.html || "") || t.innerText !== e.content) && this.state.updateElement(e.id, { html: r, content: t.innerText }) }), t.addEventListener("mousedown", r => { this.state.selectElement(e.id, { additive: r.shiftKey || r.metaKey || r.ctrlKey, group: true }), r.stopPropagation(); }), t.addEventListener("click", r => { r.target.closest && r.target.closest("a") && r.preventDefault(); }), i.appendChild(t);
     } else if (e.type === "image") {
@@ -2043,6 +2809,53 @@ class w {
         }
       });
       i.appendChild(t);
+    } else if (e.type === "chart") {
+      i.appendChild(renderSVGChart(e));
+    } else if (e.type === "mermaid") {
+      const container = document.createElement("div");
+      container.className = "mermaid-container";
+      container.style.width = "100%";
+      container.style.height = "100%";
+      container.style.overflow = "hidden";
+      
+      if (e.svg) {
+        container.innerHTML = e.svg;
+        const svgEl = container.querySelector("svg");
+        if (svgEl) {
+          svgEl.setAttribute("width", "100%");
+          svgEl.setAttribute("height", "100%");
+          svgEl.style.maxWidth = "100%";
+          svgEl.style.maxHeight = "100%";
+        }
+      } else {
+        container.innerHTML = `<pre style="font-size:12px;color:#888;">${escapeHTML(e.content)}</pre>`;
+        const uniqueId = "mermaid-" + Math.random().toString(36).substr(2, 9);
+        setTimeout(() => {
+          if (typeof mermaid !== "undefined") {
+            try {
+              mermaid.render(uniqueId, e.content || "").then(({ svg }) => {
+                container.innerHTML = svg;
+                const svgEl = container.querySelector("svg");
+                if (svgEl) {
+                  svgEl.setAttribute("width", "100%");
+                  svgEl.setAttribute("height", "100%");
+                  svgEl.style.maxWidth = "100%";
+                  svgEl.style.maxHeight = "100%";
+                }
+                e.svg = svg;
+                this.state.saveToStorage();
+              }).catch(err => {
+                container.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px;white-space:pre-wrap;">Mermaid Error: ${escapeHTML(err.message || String(err))}</div>`;
+              });
+            } catch (err) {
+              container.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px;">Mermaid Rendering Failed</div>`;
+            }
+          } else {
+            container.innerHTML = `<div style="color:#eab308;font-size:12px;padding:8px;">Mermaid library not loaded</div>`;
+          }
+        }, 50);
+      }
+      i.appendChild(container);
     }
     return n.appendChild(i), n;
   }
@@ -2321,68 +3134,158 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
   <\/script>
 </body>
 </html>`,u=new Blob([r],{type:"text/html"}),o=URL.createObjectURL(u),d=document.createElement("a");d.href=o,d.download="slidecraft_export_"+Date.now()+".html",document.body.appendChild(d),d.click(),document.body.removeChild(d),URL.revokeObjectURL(o)}
-  async exportPDF(){
-    const e=document.getElementById("print-container");
-    if(!e)return;
-    if(!window.html2canvas||!window.jspdf){
-      alert("PDF生成ライブラリの読み込みに失敗しました。ネットワーク接続を確認してください。");
-      return;
+  async exportPDF() {
+    const printContainer = document.getElementById("print-container");
+    if (!printContainer) return;
+    
+    const btn = document.getElementById("btn-export-pdf");
+    const prevText = btn ? btn.innerHTML : "";
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = "PDF生成準備中...";
     }
-    const btn=document.getElementById("btn-export-pdf");
-    const prevText=btn?btn.innerHTML:"";
-    if(btn){
-      btn.disabled=true;
-      btn.innerHTML="PDF生成中...";
-    }
-    e.innerHTML="";
-    const n=document.body.classList.contains("light-theme");
-    try{
-      const slides=this.state.slides.filter(i=>!!i);
-      if(slides.length===0)return;
-      slides.forEach((i,pageIndex)=>{
-        const t=document.createElement("div");
-        t.className="pdf-render-page";
-        const s=document.createElement("div");
-        s.className="pdf-render-slide";
-        const pageContext={page:pageIndex+1,total:slides.length};
-        applyBoardBackground(s,getEffectiveSlideBackground(this.state,i),n);
-        getRenderableSlideElements(this.state,i).forEach(r=>{
-          r&&s.appendChild(renderDOMElement(r,n,pageContext))
+    
+    printContainer.innerHTML = "";
+    const isLight = document.body.classList.contains("light-theme");
+    
+    try {
+      const slides = this.state.slides.filter(i => !!i);
+      if (slides.length === 0) return;
+      
+      const renderPromises = [];
+      
+      slides.forEach((slide, pageIndex) => {
+        const pageDiv = document.createElement("div");
+        pageDiv.className = "print-page";
+        
+        const slideDiv = document.createElement("div");
+        slideDiv.className = "print-slide-content";
+        applyBoardBackground(slideDiv, getEffectiveSlideBackground(this.state, slide), isLight);
+        
+        const pageContext = { page: pageIndex + 1, total: slides.length };
+        
+        getRenderableSlideElements(this.state, slide).forEach(elem => {
+          if (!elem) return;
+          
+          if (elem.type === "mermaid" && !elem.svg) {
+            const container = document.createElement("div");
+            container.className = "mermaid-container";
+            container.style.width = "100%";
+            container.style.height = "100%";
+            container.style.overflow = "hidden";
+            container.innerHTML = `<pre style="font-size:12px;color:#888;">${escapeHTML(elem.content)}</pre>`;
+            
+            const uniqueId = "mermaid-print-" + Math.random().toString(36).substr(2, 9);
+            const renderPromise = new Promise((resolve) => {
+              setTimeout(() => {
+                if (typeof mermaid !== "undefined") {
+                  mermaid.render(uniqueId, elem.content || "").then(({ svg }) => {
+                    container.innerHTML = svg;
+                    const svgEl = container.querySelector("svg");
+                    if (svgEl) {
+                      svgEl.setAttribute("width", "100%");
+                      svgEl.setAttribute("height", "100%");
+                    }
+                    elem.svg = svg;
+                    resolve();
+                  }).catch(err => {
+                    container.innerHTML = `<div style="color:#ef4444;font-size:12px;">Mermaid Error</div>`;
+                    resolve();
+                  });
+                } else {
+                  resolve();
+                }
+              }, 50);
+            });
+            renderPromises.push(renderPromise);
+            
+            const wrapper = document.createElement("div");
+            wrapper.className = "slide-element elem-mermaid";
+            wrapper.style.left = elem.x + "px";
+            wrapper.style.top = elem.y + "px";
+            wrapper.style.width = elem.width + "px";
+            wrapper.style.height = elem.height + "px";
+            wrapper.style.transform = "rotate(" + (elem.rotation || 0) + "deg)";
+            
+            const inner = document.createElement("div");
+            inner.className = "element-inner";
+            inner.style.width = "100%";
+            inner.style.height = "100%";
+            inner.appendChild(container);
+            wrapper.appendChild(inner);
+            slideDiv.appendChild(wrapper);
+          } else {
+            slideDiv.appendChild(renderDOMElement(elem, isLight, pageContext));
+          }
         });
-        t.appendChild(s);
-        e.appendChild(t);
+        
+        pageDiv.appendChild(slideDiv);
+        printContainer.appendChild(pageDiv);
       });
+      
       await document.fonts.ready;
-      const jsPDF=window.jspdf.jsPDF;
-      const pdf=new jsPDF({orientation:"landscape",unit:"pt",format:[S,x],compress:true});
-      const pages=e.querySelectorAll(".pdf-render-slide");
-      for(let i=0;i<pages.length;i++){
-        const canvas=await html2canvas(pages[i],{
-          backgroundColor:null,
-          scale:2,
-          useCORS:true,
-          allowTaint:false,
-          logging:false,
-          width:S,
-          height:x,
-          windowWidth:S,
-          windowHeight:x
-        });
-        if(i>0)pdf.addPage([S,x],"landscape");
-        pdf.addImage(canvas.toDataURL("image/png"),"PNG",0,0,S,x,undefined,"FAST");
-        addPDFLinks(pdf,pages[i]);
-      }
-      pdf.save("slidecraft_export_"+Date.now()+".pdf");
-    }catch(err){
-      console.error(err);
-      alert("PDF生成中にエラーが発生しました: "+(err&&err.message?err.message:err));
-    }finally{
-      e.innerHTML="";
-      if(btn){
-        btn.disabled=false;
-        btn.innerHTML=prevText;
+      await Promise.all(renderPromises);
+      
+      window.print();
+      
+    } catch (err) {
+      console.error("PDF Print error:", err);
+      alert("印刷用データの作成中にエラーが発生しました。");
+    } finally {
+      printContainer.innerHTML = "";
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = prevText;
       }
     }
+  }
+  _svgToPngB64(svgStr, width, height) {
+    return new Promise((resolve) => {
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(svgStr, "image/svg+xml");
+        const svgEl = doc.querySelector("svg");
+        if (svgEl) {
+          svgEl.setAttribute("width", width);
+          svgEl.setAttribute("height", height);
+          if (!svgEl.getAttribute("xmlns")) {
+            svgEl.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+          }
+          svgStr = new XMLSerializer().serializeToString(svgEl);
+        }
+      } catch (e) {
+        console.warn("SVG pre-parse failed:", e);
+      }
+
+      const img = new Image();
+      const svgBlob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(svgBlob);
+      
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          const scale = 2;
+          canvas.width = width * scale;
+          canvas.height = height * scale;
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, width * scale, height * scale);
+          const pngData = canvas.toDataURL("image/png");
+          resolve(pngData);
+        } catch (err) {
+          console.error("svgToPngB64 canvas error:", err);
+          resolve(null);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = (err) => {
+        console.error("svgToPngB64 img load error:", err);
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      img.src = url;
+    });
   }
   _imgToB64(url){
     return new Promise(resolve=>{
@@ -2401,104 +3304,153 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
       img.src=url;
     });
   }
-  async exportPPTX(){
-    if(typeof PptxGenJS==="undefined"){
-      alert("PptxGenJSライブラリが読み込まれていません。");return;
+  async exportPPTX() {
+    if (typeof PptxGenJS === "undefined") {
+      alert("PptxGenJSライブラリが読み込まれていません。");
+      return;
     }
-    try{
-      const cache=new Map();
-      for(const sl of this.state.slides){
-        for(const el of getRenderableSlideElements(this.state,sl)){
-          if(el&&el.type==="image"&&el.content&&!el.content.startsWith("data:")&&!cache.has(el.content)){
-            cache.set(el.content,await this._imgToB64(el.content));
+    try {
+      const cache = new Map();
+      for (const sl of this.state.slides) {
+        for (const el of getRenderableSlideElements(this.state, sl)) {
+          if (el && el.type === "image" && el.content && !el.content.startsWith("data:") && !cache.has(el.content)) {
+            cache.set(el.content, await this._imgToB64(el.content));
           }
         }
-        const bgForCache=getEffectiveSlideBackground(this.state,sl);
-        if(bgForCache&&bgForCache.type==="image"&&bgForCache.value&&!bgForCache.value.startsWith("data:")&&!cache.has(bgForCache.value)){
-          cache.set(bgForCache.value,await this._imgToB64(bgForCache.value));
+        const bgForCache = getEffectiveSlideBackground(this.state, sl);
+        if (bgForCache && bgForCache.type === "image" && bgForCache.value && !bgForCache.value.startsWith("data:") && !cache.has(bgForCache.value)) {
+          cache.set(bgForCache.value, await this._imgToB64(bgForCache.value));
         }
       }
-      const pptx=new PptxGenJS();
-      pptx.defineLayout({name:"SC16x9",width:10,height:5.625});
-      pptx.layout="SC16x9";
-      this.state.slides.forEach((sl,slideIndex)=>{
-        const ps=pptx.addSlide();
-        const pageContext={page:slideIndex+1,total:this.state.slides.length};
-        const bg=getEffectiveSlideBackground(this.state,sl);
-        if(bg.type==="color"&&bg.value){
-          ps.background={fill:bg.value.replace("#","")};
-        }else if(bg.type==="gradient"){
-          ps.background={fill:"1E1E24"};
-        }else if(bg.type==="image"&&bg.value){
-          const d=bg.value.startsWith("data:")?bg.value:cache.get(bg.value);
-          if(d) ps.background={data:d};
+      
+      const pptx = new PptxGenJS();
+      pptx.defineLayout({ name: "SC16x9", width: 10, height: 5.625 });
+      pptx.layout = "SC16x9";
+      
+      for (let slideIndex = 0; slideIndex < this.state.slides.length; slideIndex++) {
+        const sl = this.state.slides[slideIndex];
+        if (!sl) continue;
+        const ps = pptx.addSlide();
+        const pageContext = { page: slideIndex + 1, total: this.state.slides.length };
+        const bg = getEffectiveSlideBackground(this.state, sl);
+        if (bg.type === "color" && bg.value) {
+          ps.background = { fill: bg.value.replace("#", "") };
+        } else if (bg.type === "gradient") {
+          ps.background = { fill: "1E1E24" };
+        } else if (bg.type === "image" && bg.value) {
+          const d = bg.value.startsWith("data:") ? bg.value : cache.get(bg.value);
+          if (d) ps.background = { data: d };
         }
-        getRenderableSlideElements(this.state,sl).forEach(el=>{
-          if(!el)return;
-          const xi=el.x/128,yi=el.y/128,wi=el.width/128,hi=el.height/128;
-          if(el.type==="text"){
-            const st=el.style||{};
-	            const opts={x:xi,y:yi,w:wi,h:hi,
-	              fontSize:st.fontSize?Math.round(st.fontSize*PPTX_FONT_SCALE):18,
-	              color:st.color?st.color.replace("#",""):"FFFFFF",
-              bold:st.fontWeight==="bold",italic:st.fontStyle==="italic",
-              underline:st.textDecoration==="underline",
-              align:st.textAlign||"left",
-              fontFace:st.fontFamily?st.fontFamily.split(",")[0].trim().replace(/['"]/g,""):"Arial",
-	              valign:"top",wrap:true,rotate:el.rotation||0
-	            };
-            if(st.backgroundColor&&st.backgroundColor!=="transparent"){
-              opts.fill={color:st.backgroundColor.replace("#","")};
+        
+        for (const el of getRenderableSlideElements(this.state, sl)) {
+          if (!el) continue;
+          const xi = el.x / 128, yi = el.y / 128, wi = el.width / 128, hi = el.height / 128;
+          if (el.type === "text") {
+            const st = el.style || {};
+            const opts = {
+              x: xi, y: yi, w: wi, h: hi,
+              fontSize: st.fontSize ? Math.round(st.fontSize * PPTX_FONT_SCALE) : 18,
+              color: st.color ? st.color.replace("#", "") : "FFFFFF",
+              bold: st.fontWeight === "bold",
+              italic: st.fontStyle === "italic",
+              underline: st.textDecoration === "underline",
+              align: st.textAlign || "left",
+              fontFace: st.fontFamily ? st.fontFamily.split(",")[0].trim().replace(/['"]/g, "") : "Arial",
+              valign: "top", wrap: true, rotate: el.rotation || 0
+            };
+            if (st.backgroundColor && st.backgroundColor !== "transparent") {
+              opts.fill = { color: st.backgroundColor.replace("#", "") };
             }
-            const richText=getPPTXTextRuns(el,pageContext);
-            ps.addText(richText||replaceSlidePageTokens(el.content||"",pageContext),opts);
-          }else if(el.type==="image"&&el.content){
-            let d=el.content;
-            if(!d.startsWith("data:")) d=cache.get(d);
-	            if(d) ps.addImage({data:d,x:xi,y:yi,w:wi,h:hi,rotate:el.rotation||0});
-          }else if(el.type==="shape"){
-            const st=el.style||{};
-            const fc=st.backgroundColor?st.backgroundColor.replace("#",""):"6366F1";
-            let sn="rect";
-            if(el.content==="circle") sn="ellipse";
-            else if(el.content==="triangle") sn="triangle";
-	            ps.addShape(sn,{x:xi,y:yi,w:wi,h:hi,fill:{color:fc},rotate:el.rotation||0});
-	          }else if(el.type==="iframe"){
-	            ps.addShape("rect",{x:xi,y:yi,w:wi,h:hi,fill:{color:"FFFFFF"},line:{color:"6366F1",width:1},rotate:el.rotation||0});
-	            ps.addText("iframe\\n"+(el.content||""),{x:xi,y:yi,w:wi,h:hi,fontSize:14,color:"333333",align:"center",valign:"mid",rotate:el.rotation||0,fit:"shrink"});
-	          }else if(el.type==="table"){
-	            const st=el.style||{};
-	            const data=normalizeTableContent(el);
-	            const layout=normalizeTableLayout(el);
-	            const borderColor=toPPTXColor(st.borderColor,"94A3B8");
-	            const textColor=toPPTXColor(st.color,"FFFFFF");
-	            const headerTextColor=toPPTXColor(st.headerTextColor,"FFFFFF");
-	            const fillColor=toPPTXColor(st.backgroundColor,"111827");
-	            const headerColor=toPPTXColor(st.headerColor,"3730A3");
-	            try{
-	              const rows=data.map((row,rowIndex)=>row.map(text=>({
-	                text,
-	                options:{
-	                  color:rowIndex===0&&st.header!==false?headerTextColor:textColor,
-	                  bold:rowIndex===0&&st.header!==false,
-	                  fontSize:rowIndex===0&&st.header!==false?Math.round((st.headerFontSize||st.fontSize||18)*PPTX_FONT_SCALE):Math.round((st.fontSize||18)*PPTX_FONT_SCALE),
-	                  align:rowIndex===0&&st.header!==false?(st.headerTextAlign||st.textAlign||"left"):(st.textAlign||"left"),
-	                  fill:{color:rowIndex===0&&st.header!==false?headerColor:fillColor}
-	                }
-	              })));
-	              ps.addTable(rows,{x:xi,y:yi,w:wi,h:hi,colW:layout.colWidths.map(v=>v/128),rowH:layout.rowHeights.map(v=>v/128),fontFace:st.fontFamily?st.fontFamily.split(",")[0].trim().replace(/['"]/g,""):"Arial",border:{type:st.borderStyle||"solid",color:borderColor,pt:st.borderWidth==null?1:st.borderWidth},rotate:el.rotation||0});
-	            }catch(err){
-	              ps.addShape("rect",{x:xi,y:yi,w:wi,h:hi,fill:{color:fillColor},line:{color:borderColor,width:st.borderWidth==null?1:st.borderWidth},rotate:el.rotation||0});
-	              ps.addText(data.map(row=>row.join("  |  ")).join("\\n"),{x:xi+0.05,y:yi+0.05,w:Math.max(0.1,wi-0.1),h:Math.max(0.1,hi-0.1),fontSize:st.fontSize?Math.round(st.fontSize*PPTX_FONT_SCALE):14,color:textColor,align:st.textAlign||"left",valign:"top",fit:"shrink",rotate:el.rotation||0});
-	            }
-	          }
-        });
-        if(sl.notes) ps.addNotes(sl.notes);
-      });
-      await pptx.writeFile({fileName:"slidecraft_"+Date.now()+".pptx"});
-    }catch(e){
-      console.error("PPTX error:",e);
-      alert("PowerPointエクスポートエラー: "+e.message);
+            const richText = getPPTXTextRuns(el, pageContext);
+            ps.addText(richText || replaceSlidePageTokens(el.content || "", pageContext), opts);
+          } else if (el.type === "image" && el.content) {
+            let d = el.content;
+            if (!d.startsWith("data:")) d = cache.get(d);
+            if (d) ps.addImage({ data: d, x: xi, y: yi, w: wi, h: hi, rotate: el.rotation || 0 });
+          } else if (el.type === "shape") {
+            const st = el.style || {};
+            const fc = st.backgroundColor ? st.backgroundColor.replace("#", "") : "6366F1";
+            let sn = "rect";
+            if (el.content === "circle") sn = "ellipse";
+            else if (el.content === "triangle") sn = "triangle";
+            ps.addShape(sn, { x: xi, y: yi, w: wi, h: hi, fill: { color: fc }, rotate: el.rotation || 0 });
+          } else if (el.type === "iframe") {
+            ps.addShape("rect", { x: xi, y: yi, w: wi, h: hi, fill: { color: "FFFFFF" }, line: { color: "6366F1", width: 1 }, rotate: el.rotation || 0 });
+            ps.addText("iframe\n" + (el.content || ""), { x: xi, y: yi, w: wi, h: hi, fontSize: 14, color: "333333", align: "center", valign: "mid", rotate: el.rotation || 0, fit: "shrink" });
+          } else if (el.type === "table") {
+            const st = el.style || {};
+            const data = normalizeTableContent(el);
+            const layout = normalizeTableLayout(el);
+            const borderColor = toPPTXColor(st.borderColor, "94A3B8");
+            const textColor = toPPTXColor(st.color, "FFFFFF");
+            const headerTextColor = toPPTXColor(st.headerTextColor, "FFFFFF");
+            const fillColor = toPPTXColor(st.backgroundColor, "111827");
+            const headerColor = toPPTXColor(st.headerColor, "3730A3");
+            try {
+              const rows = data.map((row, rowIndex) => row.map(text => ({
+                text,
+                options: {
+                  color: rowIndex === 0 && st.header !== false ? headerTextColor : textColor,
+                  bold: rowIndex === 0 && st.header !== false,
+                  fontSize: rowIndex === 0 && st.header !== false ? Math.round((st.headerFontSize || st.fontSize || 18) * PPTX_FONT_SCALE) : Math.round((st.fontSize || 18) * PPTX_FONT_SCALE),
+                  align: rowIndex === 0 && st.header !== false ? (st.headerTextAlign || st.textAlign || "left") : (st.textAlign || "left"),
+                  fill: { color: rowIndex === 0 && st.header !== false ? headerColor : fillColor }
+                }
+              })));
+              ps.addTable(rows, { x: xi, y: yi, w: wi, h: hi, colW: layout.colWidths.map(v => v / 128), rowH: layout.rowHeights.map(v => v / 128), fontFace: st.fontFamily ? st.fontFamily.split(",")[0].trim().replace(/['"]/g, "") : "Arial", border: { type: st.borderStyle || "solid", color: borderColor, pt: st.borderWidth == null ? 1 : st.borderWidth }, rotate: el.rotation || 0 });
+            } catch (err) {
+              ps.addShape("rect", { x: xi, y: yi, w: wi, h: hi, fill: { color: fillColor }, line: { color: borderColor, width: st.borderWidth == null ? 1 : st.borderWidth }, rotate: el.rotation || 0 });
+              ps.addText(data.map(row => row.join("  |  ")).join("\n"), { x: xi + 0.05, y: yi + 0.05, w: Math.max(0.1, wi - 0.1), h: Math.max(0.1, hi - 0.1), fontSize: st.fontSize ? Math.round(st.fontSize * PPTX_FONT_SCALE) : 14, color: textColor, align: st.textAlign || "left", valign: "top", fit: "shrink", rotate: el.rotation || 0 });
+            }
+          } else if (el.type === "chart") {
+            try {
+              const containerDiv = renderSVGChart(el);
+              const svgDom = containerDiv.querySelector("svg");
+              if (!svgDom) throw new Error("SVG element not found in chart render");
+              const svgStr = new XMLSerializer().serializeToString(svgDom);
+              const pngData = await this._svgToPngB64(svgStr, el.width || 600, el.height || 400);
+              if (pngData) {
+                ps.addImage({ data: pngData, x: xi, y: yi, w: wi, h: hi, rotate: el.rotation || 0 });
+              } else {
+                throw new Error("PNG conversion failed");
+              }
+            } catch (err) {
+              console.warn("Chart PPTX conversion failed:", err);
+              ps.addShape("rect", { x: xi, y: yi, w: wi, h: hi, fill: { color: "EEEEEE" }, line: { color: "CCCCCC", width: 1 }, rotate: el.rotation || 0 });
+              ps.addText("Chart Render Error", { x: xi, y: yi, w: wi, h: hi, fontSize: 12, color: "FF0000", align: "center", valign: "mid", rotate: el.rotation || 0 });
+            }
+          } else if (el.type === "mermaid") {
+            try {
+              let svgStr = el.svg;
+              if (!svgStr && typeof mermaid !== "undefined") {
+                const uniqueId = "mermaid-pptx-" + Math.random().toString(36).substr(2, 9);
+                const res = await mermaid.render(uniqueId, el.content || "");
+                svgStr = res.svg;
+                el.svg = svgStr;
+              }
+              if (svgStr) {
+                const pngData = await this._svgToPngB64(svgStr, el.width || 600, el.height || 400);
+                if (pngData) {
+                  ps.addImage({ data: pngData, x: xi, y: yi, w: wi, h: hi, rotate: el.rotation || 0 });
+                } else {
+                  throw new Error("PNG conversion failed");
+                }
+              } else {
+                throw new Error("No SVG rendered");
+              }
+            } catch (err) {
+              console.warn("Mermaid PPTX conversion failed:", err);
+              ps.addShape("rect", { x: xi, y: yi, w: wi, h: hi, fill: { color: "EEEEEE" }, line: { color: "CCCCCC", width: 1 }, rotate: el.rotation || 0 });
+              ps.addText("Mermaid Diagram\n" + (el.content || ""), { x: xi, y: yi, w: wi, h: hi, fontSize: 12, color: "555555", align: "center", valign: "mid", rotate: el.rotation || 0 });
+            }
+          }
+        }
+        if (sl.notes) ps.addNotes(sl.notes);
+      }
+      await pptx.writeFile({ fileName: "slidecraft_" + Date.now() + ".pptx" });
+    } catch (e) {
+      console.error("PPTX error:", e);
+      alert("PowerPointエクスポートエラー: " + e.message);
     }
   }
 
@@ -2571,6 +3523,11 @@ class A {
     this.state=e,this.exporter=new C(e),this.elemPanel=document.getElementById("element-inspector"),this.slidePanel=document.getElementById("slide-inspector"),this.savedTextRange=null,this.savedTextElementId=null,this.state.subscribe(()=>this.updatePanels()),this.bindDOMEvents(),this.updatePanels();
   }
   updatePanels(){
+    const hasMultiple = this.state.selectedElementIds && this.state.selectedElementIds.length >= 2;
+    const alignSection = document.getElementById("align-tools-section");
+    if (alignSection) {
+      alignSection.style.display = hasMultiple ? "block" : "none";
+    }
     this.state.selectedElementId?(this.elemPanel.style.display="block",this.slidePanel.style.display="none",this.loadElementProperties()):(this.elemPanel.style.display="none",this.slidePanel.style.display="block",this.loadSlideProperties());
   }
   loadElementProperties(){
@@ -2582,9 +3539,28 @@ class A {
     document.getElementById("input-elem-h").value=e.height||0;
     document.getElementById("input-elem-rotation").value=e.rotation||0;
     const n=document.getElementById("inspector-text-section"),i=document.getElementById("inspector-shape-section"),a=document.getElementById("inspector-iframe-section"),tableSection=document.getElementById("inspector-table-section");
+    const chartSection=document.getElementById("inspector-chart-section");
+    const mermaidSection=document.getElementById("inspector-mermaid-section");
+    const imageSection=document.getElementById("inspector-image-section");
+    
     a.style.display=e.type==="iframe"?"block":"none";
     tableSection.style.display=e.type==="table"?"block":"none";
+    if (chartSection) chartSection.style.display=e.type==="chart"?"block":"none";
+    if (mermaidSection) mermaidSection.style.display=e.type==="mermaid"?"block":"none";
+    if (imageSection) imageSection.style.display=e.type==="image"?"block":"none";
+    
     e.type==="iframe"&&(document.getElementById("input-iframe-url").value=e.content||"");
+    if(e.type==="chart" && chartSection){
+      const t=e.style||{};
+      document.getElementById("input-chart-type").value=t.chartType||"bar";
+      document.getElementById("input-chart-data").value=e.content||"";
+      document.getElementById("input-chart-color").value=t.chartColor||"#6366f1";
+      document.getElementById("input-chart-legend").checked=t.showLegend!==false;
+    }
+    if(e.type==="mermaid" && mermaidSection){
+      document.getElementById("input-mermaid-code").value=e.content||"";
+    }
+    
     if(e.type==="table"){
       const t=e.style||{};
       const layout=normalizeTableLayout(e);
@@ -2628,7 +3604,7 @@ class A {
       document.getElementById("input-border-width").value=t.borderWidth||0;
       document.getElementById("input-border-color").value=t.borderColor||"#ffffff";
       document.getElementById("input-border-style").value=t.borderStyle||"none";
-    } else {
+    } else if(e.type!=="chart" && e.type!=="mermaid" && e.type!=="image") {
       n.style.display="none",i.style.display="none";
     }
   }
@@ -2942,6 +3918,103 @@ class A {
 
     // Presenter & Player action bindings
     document.getElementById("btn-export-pptx").addEventListener("click", () => this.exporter.exportPPTX());
+    
+    // Chart Inspector Events
+    const chartTypeInput = document.getElementById("input-chart-type");
+    const chartColorInput = document.getElementById("input-chart-color");
+    const chartLegendInput = document.getElementById("input-chart-legend");
+    const chartDataInput = document.getElementById("input-chart-data");
+    
+    if (chartTypeInput) chartTypeInput.addEventListener("change", i => e("chartType", i.target.value, !0));
+    if (chartColorInput) chartColorInput.addEventListener("change", i => e("chartColor", i.target.value, !0));
+    if (chartLegendInput) chartLegendInput.addEventListener("change", i => e("showLegend", i.target.checked, !0));
+    if (chartDataInput) {
+      chartDataInput.addEventListener("input", i => {
+        const r = this.state.selectedElementId;
+        if (r) this.state.updateElement(r, { content: i.target.value });
+      });
+    }
+    
+    // Mermaid Inspector Events
+    const mermaidCodeInput = document.getElementById("input-mermaid-code");
+    if (mermaidCodeInput) {
+      let renderTimeout = null;
+      mermaidCodeInput.addEventListener("input", i => {
+        const r = this.state.selectedElementId;
+        if (!r) return;
+        
+        const code = i.target.value;
+        this.state.updateElement(r, { content: code });
+        
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+          if (typeof mermaid !== "undefined" && code.trim() !== "") {
+            const uniqueId = "mermaid-tmp-" + Math.random().toString(36).substr(2, 9);
+            try {
+              mermaid.render(uniqueId, code).then(({ svg }) => {
+                if (this.state.selectedElementId === r) {
+                  this.state.updateElement(r, { svg: svg });
+                }
+              }).catch(err => {
+                console.warn("Mermaid Live Compile Error: ", err);
+              });
+            } catch (err) {
+              console.warn("Mermaid Live Compile Failed: ", err);
+            }
+          }
+        }, 300);
+      });
+    }
+    
+    // Toolbar Add Chart & Mermaid Button Events
+    const addChartBtn = document.getElementById("btn-add-chart");
+    const addMermaidBtn = document.getElementById("btn-add-mermaid");
+    if (addChartBtn) addChartBtn.addEventListener("click", () => this.state.addElement("chart"));
+    if (addMermaidBtn) addMermaidBtn.addEventListener("click", () => this.state.addElement("mermaid"));
+    
+    // Align Events
+    const alignTypes = ["left", "centerX", "right", "top", "centerY", "bottom"];
+    alignTypes.forEach(type => {
+      const btn = document.getElementById(`btn-align-${type}-edge`);
+      if (btn) {
+        btn.addEventListener("click", () => this.state.alignSelectedElements(type));
+      }
+    });
+    
+    // Distribute Events
+    const btnDistH = document.getElementById("btn-distribute-h");
+    const btnDistV = document.getElementById("btn-distribute-v");
+    if (btnDistH) btnDistH.addEventListener("click", () => this.state.distributeSelectedElements("horizontal"));
+    if (btnDistV) btnDistV.addEventListener("click", () => this.state.distributeSelectedElements("vertical"));
+    
+    // Image Compress Event
+    const compressImageBtn = document.getElementById("btn-compress-existing-image");
+    if (compressImageBtn) {
+      compressImageBtn.addEventListener("click", async () => {
+        const id = this.state.selectedElementId;
+        if (!id) return;
+        const elem = this.state.getSelectedElement();
+        if (!elem || elem.type !== "image" || !elem.content) return;
+        
+        compressImageBtn.disabled = true;
+        compressImageBtn.innerText = "圧縮中...";
+        try {
+          const compressed = await compressImageBase64(elem.content, 1280, 0.8);
+          if (compressed !== elem.content) {
+            this.state.updateElement(id, { content: compressed });
+            alert("画像を圧縮して軽量化しました。");
+          } else {
+            alert("この画像はすでに十分に最適化されています。");
+          }
+        } catch (err) {
+          console.error(err);
+          alert("画像の圧縮に失敗しました。");
+        } finally {
+          compressImageBtn.disabled = false;
+          compressImageBtn.innerText = "画像の圧縮（軽量化）";
+        }
+      });
+    }
   }
 }
 
@@ -2955,6 +4028,10 @@ let playerDefaultMasterId = null;
 let playerCurrentIdx = 0;
 let playerScale = 1;
 
+function isValidPlayerSlideIndex(index) {
+  return Number.isInteger(index) && index >= 0 && index < playerSlides.length;
+}
+
 function initializePlayer() {
   // Hide main editing app layout
   document.getElementById("app-header").style.display = "none";
@@ -2964,6 +4041,14 @@ function initializePlayer() {
   playerView.style.display = "flex";
   const urlParams = new URLSearchParams(window.location.search);
   activePresentationSessionId = urlParams.get("pid") || null;
+  let playerStartIndexConsumed = false;
+
+  const applyInitialPlayerIndex = () => {
+    if (playerStartIndexConsumed) return;
+    playerStartIndexConsumed = true;
+    const startIdx = parseInt(urlParams.get("index"), 10);
+    if (isValidPlayerSlideIndex(startIdx)) playerCurrentIdx = startIdx;
+  };
 
   const handlePlayerMessage = data => {
     if (!messageMatchesPresentation(data)) return;
@@ -2973,13 +4058,15 @@ function initializePlayer() {
         playerMasters = data.payload.masters || [];
         playerTheme = data.payload.theme || {};
         playerDefaultMasterId = data.payload.defaultMasterId || null;
-        const idx = parseInt(new URLSearchParams(window.location.search).get("index"), 10);
-        if (!isNaN(idx) && idx >= 0 && idx < playerSlides.length) playerCurrentIdx = idx;
+        applyInitialPlayerIndex();
+        if (!isValidPlayerSlideIndex(playerCurrentIdx)) playerCurrentIdx = Math.max(0, playerSlides.length - 1);
         renderPlayerSlide();
       }
     } else if (data && data.type === "SLIDE_CHANGE") {
-      playerCurrentIdx = data.index;
-      renderPlayerSlide();
+      if (isValidPlayerSlideIndex(data.index)) {
+        playerCurrentIdx = data.index;
+        renderPlayerSlide();
+      }
     } else if (data && data.type === "PROJECT_UPDATE") {
       if (activePresentationSessionId) return;
       playerSlides = data.slides;
@@ -3015,14 +4102,8 @@ function initializePlayer() {
     playerSlides = [{ background: { type: "color", value: "#1e1e24" }, elements: [] }];
   }
 
-  // Load start index from URL
-  const indexParam = urlParams.get("index");
-  if (indexParam !== null) {
-    const startIdx = parseInt(indexParam, 10);
-    if (!isNaN(startIdx) && startIdx >= 0 && startIdx < playerSlides.length) {
-      playerCurrentIdx = startIdx;
-    }
-  }
+  // Load start index from URL once. Later INIT_PRESENTATION retries refresh slide data only.
+  applyInitialPlayerIndex();
 
   // Notify presenter when player window closes
   window.addEventListener("beforeunload", () => {
@@ -3132,6 +4213,10 @@ let isTimerRunning = false;
 let notesFontSize = 20;
 let presenterPointerEnabled = false;
 
+function isValidPresenterSlideIndex(index) {
+  return Number.isInteger(index) && index >= 0 && index < presenterSlides.length;
+}
+
 function initializePresenter() {
   // Hide main editing app layout
   document.getElementById("app-header").style.display = "none";
@@ -3193,8 +4278,10 @@ function initializePresenter() {
   const handlePresenterMessage = data => {
     if (!messageMatchesPresentation(data)) return;
     if (data && data.type === "SLIDE_CHANGE") {
-      presenterCurrentIdx = data.index;
-      renderPresenterSlides();
+      if (isValidPresenterSlideIndex(data.index)) {
+        presenterCurrentIdx = data.index;
+        renderPresenterSlides();
+      }
     } else if (data && data.type === "PROJECT_UPDATE") {
       if (activePresentationSessionId) return;
       presenterSlides = data.slides;
@@ -3466,7 +4553,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
-  console.log("SlideCraft v1.8.3 Initializing in Editor Mode...");
+  console.log("SlideCraft v1.9.0 Initializing in Editor Mode...");
   window.appState = new I();
   const f = window.appState;
   const e = new w(f, "slide-canvas", "canvas-wrapper");
@@ -3551,17 +4638,378 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-undo").addEventListener("click", () => f.undo());
   document.getElementById("btn-redo").addEventListener("click", () => f.redo());
 
-  // Menu trigger logic
-  const t = document.getElementById("btn-menu-trigger");
-  const s = document.getElementById("menu-dropdown-list");
-  if (t && s) {
-    t.addEventListener("click", y => {
-      y.stopPropagation();
-      s.style.display = s.style.display === "block" ? "none" : "block";
+  // 共通のマルチドロップダウンメニュー制御
+  const dropdownContainers = document.querySelectorAll(".menu-dropdown-container");
+  dropdownContainers.forEach(container => {
+    const btn = container.querySelector(".menu-bar-btn");
+    const list = container.querySelector(".menu-dropdown-list");
+    if (btn && list) {
+      btn.addEventListener("click", event => {
+        event.stopPropagation();
+        dropdownContainers.forEach(other => {
+          if (other !== container) {
+            const otherList = other.querySelector(".menu-dropdown-list");
+            if (otherList) otherList.style.display = "none";
+          }
+        });
+        list.style.display = list.style.display === "block" ? "none" : "block";
+      });
+    }
+  });
+  document.addEventListener("click", () => {
+    dropdownContainers.forEach(container => {
+      const list = container.querySelector(".menu-dropdown-list");
+      if (list) list.style.display = "none";
     });
-    document.addEventListener("click", () => {
-      s.style.display = "none";
+  });
+
+  // プロジェクト管理モーダルの制御
+  const projModal = document.getElementById("project-manager-modal");
+  const openProjModal = () => {
+    if (!projModal) return;
+    projModal.classList.add("open");
+    projModal.setAttribute("aria-hidden", "false");
+    renderProjectList();
+  };
+  const closeProjModal = () => {
+    if (!projModal) return;
+    projModal.classList.remove("open");
+    projModal.setAttribute("aria-hidden", "true");
+  };
+  const projManagerBtn = document.getElementById("btn-project-manager");
+  const closeProjBtn = document.getElementById("btn-close-project-manager");
+  projManagerBtn && projManagerBtn.addEventListener("click", y => {
+    y.stopPropagation();
+    openProjModal();
+  });
+  closeProjBtn && closeProjBtn.addEventListener("click", closeProjModal);
+  projModal && projModal.addEventListener("click", y => {
+    if (y.target === projModal) closeProjModal();
+  });
+
+  // 新規プロジェクト作成ボタン
+  const modalNewProjBtn = document.getElementById("btn-modal-new-project");
+  modalNewProjBtn && modalNewProjBtn.addEventListener("click", () => {
+    const name = prompt("新しいプロジェクト名を入力してください：", "無題のプロジェクト");
+    if (name === null) return;
+    f.createNewProject(name.trim() || "無題のプロジェクト");
+    closeProjModal();
+  });
+
+  // プロジェクト一覧のレンダリング
+  function renderProjectList() {
+    const container = document.getElementById("project-list-container");
+    if (!container) return;
+    container.innerHTML = "";
+    
+    const list = f.getProjectList();
+    list.forEach(proj => {
+      const item = document.createElement("div");
+      item.className = "project-item";
+      if (proj.id === f.projectId) item.className += " active";
+      
+      const info = document.createElement("div");
+      info.className = "project-info";
+      
+      const name = document.createElement("span");
+      name.className = "project-name";
+      name.textContent = proj.name;
+      
+      const meta = document.createElement("span");
+      meta.className = "project-meta";
+      const date = new Date(proj.updatedAt).toLocaleString("ja-JP");
+      meta.textContent = `最終更新: ${date}`;
+      
+      info.appendChild(name);
+      info.appendChild(meta);
+      
+      const actions = document.createElement("div");
+      actions.className = "project-actions";
+      
+      // 開くボタン (アクティブでない時のみ)
+      if (proj.id !== f.projectId) {
+        const btnOpen = document.createElement("button");
+        btnOpen.className = "tool-btn secondary text-btn compact";
+        btnOpen.textContent = "開く";
+        btnOpen.addEventListener("click", () => {
+          f.switchProject(proj.id);
+          closeProjModal();
+        });
+        actions.appendChild(btnOpen);
+      }
+      
+      // 名前変更
+      const btnRename = document.createElement("button");
+      btnRename.className = "tool-btn secondary text-btn compact";
+      btnRename.textContent = "名前変更";
+      btnRename.addEventListener("click", () => {
+        const newName = prompt("新しいプロジェクト名を入力してください：", proj.name);
+        if (newName && newName.trim()) {
+          f.renameProject(proj.id, newName.trim());
+          renderProjectList();
+        }
+      });
+      actions.appendChild(btnRename);
+      
+      // 複製
+      const btnDup = document.createElement("button");
+      btnDup.className = "tool-btn secondary text-btn compact";
+      btnDup.textContent = "複製";
+      btnDup.addEventListener("click", () => {
+        if (f.duplicateProject(proj.id)) {
+          renderProjectList();
+        } else {
+          alert("複製に失敗しました。");
+        }
+      });
+      actions.appendChild(btnDup);
+      
+      // 削除 (デフォルト以外)
+      if (proj.id !== "default") {
+        const btnDel = document.createElement("button");
+        btnDel.className = "tool-btn danger text-btn compact";
+        btnDel.textContent = "削除";
+        btnDel.addEventListener("click", () => {
+          if (confirm(`本当にプロジェクト「${proj.name}」を削除しますか？`)) {
+            f.deleteProject(proj.id);
+            renderProjectList();
+          }
+        });
+        actions.appendChild(btnDel);
+      }
+      
+      item.appendChild(info);
+      item.appendChild(actions);
+      container.appendChild(item);
     });
+  }
+
+  // 品質チェックモーダルの制御
+  const qualityModal = document.getElementById("quality-check-modal");
+  const openQualityModal = () => {
+    if (!qualityModal) return;
+    qualityModal.classList.add("open");
+    qualityModal.setAttribute("aria-hidden", "false");
+    runQualityCheck();
+  };
+  const closeQualityModal = () => {
+    if (!qualityModal) return;
+    qualityModal.classList.remove("open");
+    qualityModal.setAttribute("aria-hidden", "true");
+  };
+  const qualityTriggerBtn = document.getElementById("btn-quality-check-trigger");
+  const closeQualityBtn = document.getElementById("btn-close-quality-check");
+  qualityTriggerBtn && qualityTriggerBtn.addEventListener("click", y => {
+    y.stopPropagation();
+    openQualityModal();
+  });
+  closeQualityBtn && closeQualityBtn.addEventListener("click", closeQualityModal);
+  qualityModal && qualityModal.addEventListener("click", y => {
+    if (y.target === qualityModal) closeQualityModal();
+  });
+
+  // 品質チェックの実行
+  function runQualityCheck() {
+    const resultsContainer = document.getElementById("quality-check-results");
+    const scoreBadge = document.getElementById("quality-score-badge");
+    if (!resultsContainer || !scoreBadge) return;
+    resultsContainer.innerHTML = "";
+    
+    const audit = runSlideQualityAudit(f);
+    scoreBadge.textContent = `${audit.score} / 100`;
+    
+    if (audit.results.length === 0) {
+      const card = document.createElement("div");
+      card.className = "quality-card info";
+      card.innerHTML = `
+        <div class="quality-card-icon">🎉</div>
+        <div class="quality-card-content">
+          <div class="quality-card-title">すべてクリア！</div>
+          <div class="quality-card-desc">スライドに問題は見つかりませんでした。素晴らしいクオリティです！</div>
+        </div>
+      `;
+      resultsContainer.appendChild(card);
+      return;
+    }
+    
+    audit.results.forEach(res => {
+      const card = document.createElement("div");
+      card.className = `quality-card ${res.type}`;
+      
+      const icon = res.type === "danger" ? "🚨" : res.type === "warning" ? "⚠️" : "💡";
+      
+      const content = document.createElement("div");
+      content.className = "quality-card-content";
+      
+      const title = document.createElement("div");
+      title.className = "quality-card-title";
+      title.textContent = res.title;
+      
+      const desc = document.createElement("div");
+      desc.className = "quality-card-desc";
+      desc.textContent = res.desc;
+      
+      content.appendChild(title);
+      content.appendChild(desc);
+      
+      if (res.slideId) {
+        const action = document.createElement("span");
+        action.className = "quality-card-action";
+        action.textContent = "該当スライドへ移動";
+        action.addEventListener("click", () => {
+          f.selectSlide(res.slideId);
+          if (res.elementId) {
+            f.selectElement(res.elementId);
+          }
+          closeQualityModal();
+        });
+        content.appendChild(action);
+      }
+      
+      card.innerHTML = `<div class="quality-card-icon">${icon}</div>`;
+      card.appendChild(content);
+      resultsContainer.appendChild(card);
+    });
+  }
+
+  // Esc キーでプロジェクト管理や品質チェックモーダルを閉じる
+  document.addEventListener("keydown", y => {
+    if (y.key === "Escape") {
+      if (projModal && projModal.classList.contains("open")) closeProjModal();
+      if (qualityModal && qualityModal.classList.contains("open")) closeQualityModal();
+    }
+  });
+
+  // 画像圧縮ヘルパー関数
+  function compressImageBase64(base64Str, maxWidth = 1280, quality = 0.8) {
+    return new Promise((resolve) => {
+      if (!base64Str.startsWith("data:image/") || base64Str.includes("image/svg+xml")) {
+        resolve(base64Str);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let width = img.naturalWidth || img.width;
+          let height = img.naturalHeight || img.height;
+          if (width > maxWidth) {
+            const ratio = maxWidth / width;
+            width = maxWidth;
+            height = Math.round(height * ratio);
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressed = canvas.toDataURL("image/jpeg", quality);
+          if (compressed.length < base64Str.length) {
+            resolve(compressed);
+          } else {
+            resolve(base64Str);
+          }
+        } catch (e) {
+          console.warn("Image compression failed", e);
+          resolve(base64Str);
+        }
+      };
+      img.onerror = () => resolve(base64Str);
+      img.src = base64Str;
+    });
+  }
+
+  // スライド品質診断ヘルパー関数
+  function runSlideQualityAudit(state) {
+    const slides = state.slides || [];
+    const results = [];
+    let score = 100;
+    
+    if (slides.length === 0) {
+      return { score: 100, results: [{ type: "info", title: "スライドがありません", desc: "スライドを追加して作成を開始してください。" }] };
+    }
+    
+    slides.forEach((slide, sIdx) => {
+      const sNum = sIdx + 1;
+      const sName = `スライド ${sNum}`;
+      
+      const noteCharCount = (slide.notes || "").trim().length;
+      if (noteCharCount === 0) {
+        results.push({
+          type: "info",
+          slideId: slide.id,
+          title: `${sName}: スピーカーノートが未入力です`,
+          desc: "発表時の原稿（スピーカーノート）を入力しておくと、スライドショーでの発表がスムーズになります。"
+        });
+        score -= 5;
+      } else if (noteCharCount > 600) {
+        results.push({
+          type: "warning",
+          slideId: slide.id,
+          title: `${sName}: スピーカーノート（原稿）が長すぎます`,
+          desc: `現在の文字数: ${noteCharCount}文字。1枚のスライドで話す情報量が多すぎます。スライドを分割するか原稿を短縮しましょう。`
+        });
+        score -= 10;
+      }
+      
+      const elements = slide.elements || [];
+      if (elements.length >= 12) {
+        results.push({
+          type: "warning",
+          slideId: slide.id,
+          title: `${sName}: 要素が多すぎます（過密）`,
+          desc: `配置されている要素数: ${elements.length}個。スライドの情報量が多すぎると伝わりにくくなります。`
+        });
+        score -= 10;
+      }
+      
+      const coordsMap = new Map();
+      elements.forEach(el => {
+        const isOutOfBounds = el.x < 0 || el.y < 0 || (el.x + el.width) > 1280 || (el.y + el.height) > 720;
+        if (isOutOfBounds) {
+          results.push({
+            type: "warning",
+            slideId: slide.id,
+            elementId: el.id,
+            title: `${sName}: 要素がスライドからはみ出しています`,
+            desc: `「${el.type}」要素（X: ${el.x}, Y: ${el.y}）がスライド枠（1280x720）外にあるか、はみ出ています。`
+          });
+          score -= 10;
+        }
+        
+        if (el.type === "text") {
+          const fontSize = (el.style && el.style.fontSize) || 24;
+          if (fontSize < 18) {
+            results.push({
+              type: "warning",
+              slideId: slide.id,
+              elementId: el.id,
+              title: `${sName}: 文字サイズが小さすぎます`,
+              desc: `テキスト（サイズ: ${fontSize}px）があります。プレゼンテーションの視認性を確保するため、18px以上を推奨します。`
+            });
+            score -= 10;
+          }
+        }
+        
+        const coordKey = `${el.x},${el.y},${el.width},${el.height}`;
+        if (coordsMap.has(coordKey)) {
+          results.push({
+            type: "danger",
+            slideId: slide.id,
+            elementId: el.id,
+            title: `${sName}: 完全に重なった要素があります`,
+            desc: `座標・サイズが全く同一の「${el.type}」要素が重複して配置されています。不要であれば一方を削除してください。`
+          });
+          score -= 15;
+        } else {
+          coordsMap.set(coordKey, el.id);
+        }
+      });
+    });
+    
+    return {
+      score: Math.max(0, score),
+      results: results
+    };
   }
 
   const masterManualModal = document.getElementById("master-manual-modal");
@@ -3569,7 +5017,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!masterManualModal) return;
     masterManualModal.classList.add("open");
     masterManualModal.setAttribute("aria-hidden", "false");
-    if (s) s.style.display = "none";
+    document.querySelectorAll(".menu-dropdown-container .menu-dropdown-list").forEach(l => l.style.display = "none");
   };
   const closeMasterManual = () => {
     if (!masterManualModal) return;
@@ -3589,6 +5037,52 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("keydown", y => {
     if (y.key === "Escape" && masterManualModal && masterManualModal.classList.contains("open")) closeMasterManual();
   });
+
+  // Markdown Import Modal Setup
+  const mdImportModal = document.getElementById("markdown-import-modal");
+  const openMdImport = () => {
+    if (!mdImportModal) return;
+    mdImportModal.classList.add("open");
+    mdImportModal.setAttribute("aria-hidden", "false");
+    document.querySelectorAll(".menu-dropdown-container .menu-dropdown-list").forEach(l => l.style.display = "none");
+  };
+  const closeMdImport = () => {
+    if (!mdImportModal) return;
+    mdImportModal.classList.remove("open");
+    mdImportModal.setAttribute("aria-hidden", "true");
+  };
+  const mdImportBtn = document.getElementById("btn-import-markdown-trigger");
+  const closeMdImportBtn = document.getElementById("btn-close-markdown-import");
+  mdImportBtn && mdImportBtn.addEventListener("click", y => {
+    y.stopPropagation();
+    openMdImport();
+  });
+  closeMdImportBtn && closeMdImportBtn.addEventListener("click", closeMdImport);
+  mdImportModal && mdImportModal.addEventListener("click", y => {
+    if (y.target === mdImportModal) closeMdImport();
+  });
+  document.addEventListener("keydown", y => {
+    if (y.key === "Escape" && mdImportModal && mdImportModal.classList.contains("open")) closeMdImport();
+  });
+  
+  // Slide generation execution
+  const generateBtn = document.getElementById("btn-generate-slides");
+  if (generateBtn) {
+    generateBtn.addEventListener("click", () => {
+      const mdText = document.getElementById("input-markdown-text").value;
+      const appendMode = document.querySelector('input[name="markdown-import-mode"]:checked').value === "append";
+      if (f && f.createSlidesFromMarkdown) {
+        if (f.createSlidesFromMarkdown(mdText, appendMode)) {
+          closeMdImport();
+          alert("スライドを自動生成しました。");
+        } else {
+          alert("スライドの生成に失敗しました。Markdownを入力してください。");
+        }
+      } else {
+        alert("システムエラー: 状態管理オブジェクトが見つかりません。");
+      }
+    });
+  }
 
   // Theme toggle
   const r = document.getElementById("btn-toggle-theme");
@@ -3622,8 +5116,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const m = y.target.files[0];
       if (!m) return;
       const h = new FileReader();
-      h.onload = l => {
-        f.addElement("image", { url: l.target.result });
+      h.onload = async l => {
+        const originalUrl = l.target.result;
+        const compressedUrl = await compressImageBase64(originalUrl, 1280, 0.8);
+        f.addElement("image", { url: compressedUrl });
         c.value = "";
       };
       h.readAsDataURL(m);
@@ -3632,7 +5128,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Sync slides across tabs in editing mode too
   syncChannel.addEventListener("message", (event) => {
-    if (event.data && event.data.type === "SLIDE_CHANGE") {
+    if (event.data && event.data.type === "EDITOR_SLIDE_CHANGE") {
       const slide = f.slides[event.data.index];
       if (slide) {
         f.selectSlide(slide.id);
@@ -3732,7 +5228,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (event === "slideSelect" || event === "slideAdd" || event === "slideDelete" || event === "projectImport" || event === "undo" || event === "redo") {
         const currentIdx = state.slides.findIndex(s => s.id === state.currentSlideId);
         if (currentIdx !== -1) {
-          syncChannel.postMessage({ type: "SLIDE_CHANGE", index: currentIdx });
+          syncChannel.postMessage({ type: "EDITOR_SLIDE_CHANGE", index: currentIdx });
         }
       }
     }
@@ -3806,7 +5302,8 @@ body {
   border-bottom: 1px solid var(--border-color);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 16px;
   padding: 0 20px;
   z-index: 100;
   box-shadow: var(--shadow-sm);
@@ -3815,6 +5312,8 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 .logo-text {
   font-size: 20px;
@@ -3843,7 +5342,9 @@ body {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(5, 5, 8, .72);
+  background: rgba(5, 5, 8, .5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 .manual-modal.open {
   display: flex;
@@ -3920,6 +5421,9 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex: 0 0 auto;
+  min-width: max-content;
+  align-self: center;
 }
 #app-workspace {
   flex: 1;
@@ -4536,48 +6040,63 @@ input[type=color]::-webkit-color-swatch {
   html, body {
     margin: 0 !important;
     padding: 0 !important;
-    width: auto !important;
-    height: auto !important;
+    width: 100% !important;
+    height: 100% !important;
     overflow: visible !important;
     background: #fff !important;
   }
-  body * {
-    visibility: hidden;
-  }
-  #print-container, #print-container * {
-    visibility: visible;
+  header, 
+  #app-workspace, 
+  #presentation-overlay, 
+  #player-view, 
+  #presenter-view, 
+  .manual-modal, 
+  .markdown-modal,
+  #input-import-master,
+  #input-add-image {
+    display: none !important;
   }
   #print-container {
     display: block !important;
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    margin: 0;
-    padding: 0;
+    position: relative !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    visibility: visible !important;
+  }
+  #print-container * {
+    visibility: visible !important;
   }
   .print-page {
-    page-break-after: always;
-    page-break-inside: avoid;
-    position: relative;
-    overflow: hidden;
+    page-break-after: always !important;
+    page-break-inside: avoid !important;
+    position: relative !important;
+    box-sizing: border-box;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    width: 100% !important;
+    height: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    overflow: hidden !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
-    box-sizing: border-box;
-    margin: 0;
-    padding: 5mm;
-    border: none;
-    width: 100%;
-    height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  }
+  .print-page:last-child {
+    page-break-after: avoid !important;
   }
   .print-slide-content {
-    width: 1280px;
-    height: 720px;
-    zoom: 0.78;
-    flex-shrink: 0;
+    width: 1280px !important;
+    height: 720px !important;
+    zoom: 0.78 !important;
+    flex-shrink: 0 !important;
+    position: relative !important;
   }
 }
 .mt-4 { margin-top: 4px; }
@@ -4866,65 +6385,162 @@ input[type=color]::-webkit-color-swatch {
   justify-content: space-between;
   padding: 0 24px;
 }
+
+  /* Menu Bar Styles */
+  .app-menu-bar { display: flex; gap: 2px; }
+  .app-menu-bar {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .menu-bar-btn {
+    background: transparent; border: none; color: var(--text-secondary);
+    font-size: 13px; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+  .menu-bar-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
+
+  .toolbar-section.add-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 0;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .toolbar-section.add-tools::-webkit-scrollbar {
+    display: none;
+  }
+  .toolbar-section.add-tools .toolbar-label,
+  .toolbar-section.add-tools .tool-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  #btn-start-presentation {
+    flex: 0 0 auto;
+    min-width: max-content;
+    height: 42px;
+    padding: 0 18px;
+    white-space: nowrap;
+  }
+
+  /* Align Tools Grid */
+  .btn-grid-align {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
+  }
+  .btn-grid-align .tool-btn {
+    font-size: 16px; padding: 6px 0; text-align: center;
+  }
+
+  /* Project Item */
+  .project-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 6px;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
+    transition: background 0.15s;
+  }
+  .project-item:hover { background: rgba(255,255,255,0.08); }
+  .project-item.active { border-color: var(--accent); background: rgba(99,102,241,0.1); }
+  .project-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .project-name { font-size: 14px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .project-meta { font-size: 11px; color: var(--text-muted); }
+  .project-actions { display: flex; gap: 4px; flex-shrink: 0; margin-left: 12px; }
+  .tool-btn.compact { padding: 4px 10px; font-size: 12px; }
+  .tool-btn.danger { color: #ef4444; border-color: rgba(239,68,68,0.3); }
+  .tool-btn.danger:hover { background: rgba(239,68,68,0.15); }
+
+  /* Modal Overlay */
+  .modal-overlay {
+    display: none;
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+    z-index: 9000; align-items: center; justify-content: center;
+  }
+  .modal-overlay.open {
+    display: flex;
+  }
+  .modal-dialog {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; width: 90%; padding: 0;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .modal-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+  }
+  .modal-title { font-size: 16px; font-weight: 700; color: var(--text-primary); margin: 0; }
+  .modal-body { padding: 20px 24px; }
+
+  /* Quality Check Cards */
+  .quality-card {
+    display: flex; gap: 12px; padding: 12px 16px; border-radius: 10px;
+    margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.03);
+  }
+  .quality-card.warning { border-color: rgba(245,158,11,0.3); background: rgba(245,158,11,0.06); }
+  .quality-card.danger { border-color: rgba(239,68,68,0.3); background: rgba(239,68,68,0.06); }
+  .quality-card.info { border-color: rgba(99,102,241,0.3); background: rgba(99,102,241,0.06); }
+  .quality-card-icon { font-size: 20px; flex-shrink: 0; line-height: 1.4; }
+  .quality-card-content { flex: 1; min-width: 0; }
+  .quality-card-title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+  .quality-card-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+  .quality-card-action {
+    display: inline-block; margin-top: 6px; font-size: 12px; color: var(--accent);
+    cursor: pointer; text-decoration: underline;
+  }
+  .quality-card-action:hover { color: #818cf8; }
   </style>
 </head>
 <body>
   <header id="app-header">
     <div class="logo-section">
-      <div class="menu-dropdown-container">
-        <button id="btn-menu-trigger" class="tool-btn icon-btn" title="メニュー">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="3" y1="12" x2="21" y2="12"></line>
-            <line x1="3" y1="6" x2="21" y2="6"></line>
-            <line x1="3" y1="18" x2="21" y2="18"></line>
-          </svg>
-        </button>
-        <div id="menu-dropdown-list" class="menu-dropdown-list">
-          <button id="btn-new-project" class="menu-dropdown-item">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>
-            新規作成
-          </button>
-          <div class="menu-divider"></div>
-          <button id="btn-export-json" class="menu-dropdown-item">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-            保存 (JSON)
-          </button>
-          <button id="btn-import-trigger" class="menu-dropdown-item" onclick="document.getElementById('input-import-json').click()">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-            読込 (JSON)
-          </button>
-          <input type="file" id="input-import-json" accept="application/json" style="display:none">
-          <div class="menu-divider"></div>
-          <button id="btn-save-master" class="menu-dropdown-item">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-            テンプレート保存
-          </button>
-          <button id="btn-load-master-trigger" class="menu-dropdown-item" onclick="document.getElementById('input-import-master').click()">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-            テンプレート読込
-          </button>
-          <input type="file" id="input-import-master" accept="application/json" style="display:none">
-          <button id="btn-master-manual" class="menu-dropdown-item">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z"></path><path d="M8 7h8"></path><path d="M8 11h8"></path><path d="M8 15h5"></path></svg>
-            マスターマニュアル
-          </button>
-          <div class="menu-divider"></div>
-          <button id="btn-export-html" class="menu-dropdown-item primary">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path><polyline points="16 16 12 12 8 16"></polyline></svg>
-            HTML出力 (単一ファイル)
-          </button>
-          <button id="btn-export-pdf" class="menu-dropdown-item primary">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-            PDF出力
-          </button>
-          <button id="btn-export-pptx" class="menu-dropdown-item primary">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg>
-            PowerPoint (.pptx) 出力
-          </button>
+      <h1 class="logo-text" style="margin-right:12px;">SlideCraft</h1>
+      <span class="logo-badge" style="margin-right:20px;">v2.0.0</span>
+      <nav class="app-menu-bar">
+        <div class="menu-dropdown-container">
+          <button class="menu-bar-btn">プロジェクト</button>
+          <div class="menu-dropdown-list">
+            <button id="btn-project-manager" class="menu-dropdown-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg> プロジェクト管理...</button>
+            <div class="menu-divider"></div>
+            <button id="btn-new-project" class="menu-dropdown-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg> 新規作成</button>
+            <button id="btn-export-json" class="menu-dropdown-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg> 保存 (JSON)</button>
+            <button id="btn-import-trigger" class="menu-dropdown-item" onclick="document.getElementById('input-import-json').click()"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> 読込 (JSON)</button>
+            <input type="file" id="input-import-json" accept="application/json" style="display:none">
+          </div>
         </div>
-      </div>
-      <h1 class="logo-text">SlideCraft</h1>
-      <span class="logo-badge">v1.8.3</span>
+        <div class="menu-dropdown-container">
+          <button class="menu-bar-btn">テンプレート</button>
+          <div class="menu-dropdown-list">
+            <button id="btn-save-master" class="menu-dropdown-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg> テンプレート保存</button>
+            <button id="btn-load-master-trigger" class="menu-dropdown-item" onclick="document.getElementById('input-import-master').click()"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> テンプレート読込</button>
+            <input type="file" id="input-import-master" accept="application/json" style="display:none">
+            <div class="menu-divider"></div>
+            <button id="btn-import-markdown-trigger" class="menu-dropdown-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg> Markdownから生成</button>
+          </div>
+        </div>
+        <div class="menu-dropdown-container">
+          <button class="menu-bar-btn">エクスポート</button>
+          <div class="menu-dropdown-list">
+            <button id="btn-export-html" class="menu-dropdown-item primary"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path></svg> HTML出力</button>
+            <button id="btn-export-pdf" class="menu-dropdown-item primary"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg> PDF出力</button>
+            <button id="btn-export-pptx" class="menu-dropdown-item primary"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg> PowerPoint出力</button>
+          </div>
+        </div>
+        <div class="menu-dropdown-container">
+          <button class="menu-bar-btn">ツール</button>
+          <div class="menu-dropdown-list">
+            <button id="btn-quality-check-trigger" class="menu-dropdown-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg> スライド品質チェック...</button>
+          </div>
+        </div>
+        <div class="menu-dropdown-container">
+          <button class="menu-bar-btn">ヘルプ</button>
+          <div class="menu-dropdown-list">
+            <button id="btn-master-manual" class="menu-dropdown-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z"></path></svg> マスターマニュアル</button>
+          </div>
+        </div>
+      </nav>
     </div>
 
     <div class="toolbar-section add-tools">
@@ -4960,6 +6576,14 @@ input[type=color]::-webkit-color-swatch {
       <button id="btn-add-page-number" class="tool-btn text-btn" title="ページ番号を挿入">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 8h8"></path><path d="M8 12h3"></path><path d="M15 15h1v4"></path><path d="M14 19h4"></path></svg>
         ページ番号
+      </button>
+      <button id="btn-add-chart" class="tool-btn shape-btn" title="グラフを挿入">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"></path><path d="M12 20V4"></path><path d="M6 20v-6"></path></svg>
+        グラフ
+      </button>
+      <button id="btn-add-mermaid" class="tool-btn shape-btn" title="Mermaid図を追加">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+        Mermaid
       </button>
       <input type="file" id="input-add-image" accept="image/*" style="display:none">
     </div>
@@ -5253,6 +6877,47 @@ input[type=color]::-webkit-color-swatch {
             </div>
           </div>
 
+          <div id="inspector-chart-section" class="inspector-section" style="display:none;">
+            <span class="inspector-label">グラフ設定</span>
+            <div class="form-group-col">
+              <span class="form-label-sub">グラフの種類</span>
+              <select id="input-chart-type" class="form-select">
+                <option value="bar">棒グラフ (Bar)</option>
+                <option value="pie">円グラフ (Pie)</option>
+                <option value="line">折れ線グラフ (Line)</option>
+              </select>
+            </div>
+            <div class="form-group-col mt-4">
+              <span class="form-label-sub">データ (CSV形式: ラベル,値)</span>
+              <textarea id="input-chart-data" class="form-textarea" rows="5" placeholder="製品A,120&#10;製品B,200&#10;製品C,150"></textarea>
+            </div>
+            <div class="form-group-row mt-4">
+              <div class="form-group-col">
+                <span class="form-label-sub">グラフ色</span>
+                <input type="color" id="input-chart-color" value="#6366f1">
+              </div>
+              <label class="form-check mt-8" style="display:flex;align-items:center;gap:4px;">
+                <input type="checkbox" id="input-chart-legend" checked>
+                <span>凡例を表示</span>
+              </label>
+            </div>
+          </div>
+
+          <div id="inspector-mermaid-section" class="inspector-section" style="display:none;">
+            <span class="inspector-label">Mermaid設定</span>
+            <div class="form-group-col">
+              <span class="form-label-sub">Mermaidコード</span>
+              <textarea id="input-mermaid-code" class="form-textarea" rows="8" placeholder="graph TD&#10;  A[開始] --> B(処理)&#10;  B --> C{条件}&#10;  C -- Yes --> D[結果A]&#10;  C -- No --> E[結果B]"></textarea>
+            </div>
+            <span class="form-help">フローチャート、シーケンス図、円グラフなどを記述できます。</span>
+          </div>
+
+          <!-- 画像設定セクション -->
+          <div id="inspector-image-section" class="inspector-group" style="display:none;">
+            <div class="inspector-label">画像設定</div>
+            <button id="btn-compress-existing-image" class="tool-btn text-btn" style="width:100%;margin-top:6px;">画像の圧縮（軽量化）</button>
+          </div>
+
           <div class="inspector-section">
             <span class="inspector-label">オブジェクト操作</span>
 	            <div class="btn-group">
@@ -5268,6 +6933,24 @@ input[type=color]::-webkit-color-swatch {
               要素を削除
             </button>
           </div>
+
+          <!-- 整列・配置ツール -->
+          <div id="align-tools-section" class="inspector-group" style="display:none;">
+            <div class="inspector-label">整列・配置（複数選択時）</div>
+            <div class="btn-grid-align">
+              <button id="btn-align-left-edge" class="tool-btn icon-btn compact" title="左揃え">⫷</button>
+              <button id="btn-align-centerX-edge" class="tool-btn icon-btn compact" title="左右中央">⫿</button>
+              <button id="btn-align-right-edge" class="tool-btn icon-btn compact" title="右揃え">⫸</button>
+              <button id="btn-align-top-edge" class="tool-btn icon-btn compact" title="上揃え">⬆</button>
+              <button id="btn-align-centerY-edge" class="tool-btn icon-btn compact" title="上下中央">⬌</button>
+              <button id="btn-align-bottom-edge" class="tool-btn icon-btn compact" title="下揃え">⬇</button>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:6px;">
+              <button id="btn-distribute-h" class="tool-btn text-btn compact" style="flex:1;">水平等間隔</button>
+              <button id="btn-distribute-v" class="tool-btn text-btn compact" style="flex:1;">垂直等間隔</button>
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -5416,6 +7099,38 @@ input[type=color]::-webkit-color-swatch {
 
   <div id="print-container"></div>
 
+  <!-- プロジェクト管理モーダル -->
+  <div id="project-manager-modal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-dialog" style="max-width:640px;">
+      <div class="modal-header">
+        <h2 class="modal-title">プロジェクト管理</h2>
+        <button id="btn-close-project-manager" class="tool-btn icon-btn" title="閉じる">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+          <button id="btn-modal-new-project" class="tool-btn primary text-btn">＋ 新規プロジェクト</button>
+        </div>
+        <div id="project-list-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 品質チェックモーダル -->
+  <div id="quality-check-modal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-dialog" style="max-width:680px;">
+      <div class="modal-header">
+        <h2 class="modal-title">スライド品質チェック</h2>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span id="quality-score-badge" style="font-size:18px;font-weight:700;color:var(--accent);background:rgba(99,102,241,0.15);padding:4px 14px;border-radius:20px;">-- / 100</span>
+          <button id="btn-close-quality-check" class="tool-btn icon-btn" title="閉じる">&times;</button>
+        </div>
+      </div>
+      <div class="modal-body" style="max-height:60vh;overflow-y:auto;">
+        <div id="quality-check-results"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="master-manual-modal" class="manual-modal" aria-hidden="true">
     <div class="manual-dialog" role="dialog" aria-modal="true" aria-labelledby="master-manual-title">
       <div class="manual-header">
@@ -5472,6 +7187,35 @@ input[type=color]::-webkit-color-swatch {
         </ol>
 
         <div class="manual-note">判断に迷ったら、全ページ共通ならマスター、ページ種別ごとに変えたいならレイアウト、そのページだけなら通常スライドに置きます。固定画像はアップロード画像にすると、テンプレートJSON内に保存されるため再利用が安定します。</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="markdown-import-modal" class="manual-modal" aria-hidden="true">
+    <div class="manual-dialog" role="dialog" aria-modal="true" aria-labelledby="markdown-import-title" style="max-width:800px;">
+      <div class="manual-header">
+        <h2 id="markdown-import-title">Markdownからスライド生成</h2>
+        <button id="btn-close-markdown-import" class="manual-close" title="閉じる" aria-label="閉じる">&times;</button>
+      </div>
+      <div class="manual-body">
+        <p class="form-help" style="margin-bottom:12px;">Markdown形式のテキストからスライドを一括自動生成します。スライド同士は <code>---</code> （水平線）で区切られます。</p>
+        <div class="form-group-col">
+          <span class="form-label-sub">Markdownテキスト</span>
+          <textarea id="input-markdown-text" class="form-textarea" style="height:320px; font-family:monospace; font-size:13px; color:var(--text-main); background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:12px;" placeholder="# スライド1: タイトル&#10;・これは箇条書きです&#10;・もう一つの箇条書き&#10;&#10;---&#10;&#10;# スライド2: 画像入り&#10;・左側に箇条書き&#10;・右側に画像&#10;![Unsplash画像](https://images.unsplash.com/photo-1557804506-669a67965ba0?w=600)"></textarea>
+        </div>
+        <div class="form-group-row mt-12" style="justify-content:space-between; align-items:center; display:flex; gap:16px;">
+          <div style="display:flex; gap:16px; align-items:center;">
+            <label class="form-check" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+              <input type="radio" name="markdown-import-mode" value="replace" checked>
+              <span>新規プロジェクトとして生成</span>
+            </label>
+            <label class="form-check" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+              <input type="radio" name="markdown-import-mode" value="append">
+              <span>現在のスライドの後に追加</span>
+            </label>
+          </div>
+          <button id="btn-generate-slides" class="action-btn-main" style="width:auto; padding:10px 24px;">スライドを生成</button>
+        </div>
       </div>
     </div>
   </div>
