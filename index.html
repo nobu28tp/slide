@@ -576,8 +576,25 @@ function sanitizeTextHTML(html) {
   return output.innerHTML;
 }
 
-function getTextHTML(elem) {
-  return elem && elem.html ? sanitizeTextHTML(elem.html) : escapeHTML(elem && elem.content).replace(/\n/g, "<br>");
+function getSlidePageContext(slides, slide) {
+  const source = Array.isArray(slides) ? slides : [];
+  const index = source.findIndex(item => item && slide && item.id === slide.id);
+  return { page: index >= 0 ? index + 1 : 1, total: source.length || 1 };
+}
+
+function replaceSlidePageTokens(value, pageContext) {
+  if (!pageContext) return String(value || "");
+  const page = pageContext.page || 1;
+  const total = pageContext.total || 1;
+  return String(value || "")
+    .replace(/\{\{\s*page\s*\}\}/gi, page)
+    .replace(/\{\{\s*total\s*\}\}/gi, total)
+    .replace(/\{\{\s*pageTotal\s*\}\}/gi, page + " / " + total);
+}
+
+function getTextHTML(elem, pageContext) {
+  const html = elem && elem.html ? sanitizeTextHTML(elem.html) : escapeHTML(elem && elem.content).replace(/\n/g, "<br>");
+  return replaceSlidePageTokens(html, pageContext);
 }
 
 function normalizeTableContent(elem) {
@@ -661,9 +678,9 @@ function renderTableElement(elem, editable, onCellChange, onCellMouseDown) {
   return table;
 }
 
-function getPPTXTextRuns(elem) {
+function getPPTXTextRuns(elem, pageContext) {
   const host = document.createElement("div");
-  host.innerHTML = getTextHTML(elem);
+  host.innerHTML = getTextHTML(elem, pageContext);
   const runs = [];
   let hasLink = false;
   const walk = (node, linkUrl) => {
@@ -726,12 +743,24 @@ function toPPTXColor(value, fallback = "FFFFFF") {
   return fallback;
 }
 
+const PPTX_FONT_SCALE = 72 / 128;
+const SLIDE_CLIPBOARD_TYPE = "slidecraft-slide";
+const SLIDE_CLIPBOARD_VERSION = "1.8.3";
+const SLIDE_CLIPBOARD_STORAGE_KEY = "slidecraft_slide_clipboard";
+
 function cloneJSON(value) {
   return JSON.parse(JSON.stringify(value || null));
 }
 
 function makeId(prefix) {
   return prefix + "-" + Math.random().toString(36).substr(2, 9);
+}
+
+function remapElementIds(elements, prefix = "elem") {
+  return (Array.isArray(elements) ? elements : []).map(elem => ({
+    ...cloneJSON(elem),
+    id: makeId(prefix)
+  }));
 }
 
 function normalizeMaster(master) {
@@ -836,7 +865,7 @@ function getRenderableSlideElements(source, slide) {
 }
 
 // Helper function to render a slide element to a DOM container (used by Player/Presenter/Print)
-function renderDOMElement(elem, isLight) {
+function renderDOMElement(elem, isLight, pageContext) {
   const wrapper = document.createElement("div");
   wrapper.className = "slide-element";
   if (elem.masterElement) wrapper.className += " master-element";
@@ -860,7 +889,7 @@ function renderDOMElement(elem, isLight) {
   if (elem.type === "text") {
     const txt = document.createElement("div");
     txt.className = "text-inner";
-    txt.innerHTML = getTextHTML(elem);
+    txt.innerHTML = getTextHTML(elem, pageContext);
     if (elem.style) {
       if (elem.style.fontSize) txt.style.fontSize = elem.style.fontSize + "px";
       if (elem.style.color) txt.style.color = elem.style.color;
@@ -1143,6 +1172,128 @@ class I {
     this.saveToStorage();
     this.notify("slideDuplicate");
   }
+  createSlideClipboardPayload(slideId = this.currentSlideId) {
+    const slide = this.slides.find(s => s.id === slideId);
+    if (!slide) return null;
+    const layout = this.getLayoutById(slide.layoutId);
+    const masterIds = new Set([slide.masterId, layout && layout.masterId].filter(Boolean));
+    const masters = (this.masters || []).filter(master => master && masterIds.has(master.id));
+    return {
+      type: SLIDE_CLIPBOARD_TYPE,
+      version: SLIDE_CLIPBOARD_VERSION,
+      createdAt: Date.now(),
+      theme: cloneJSON(this.theme || {}),
+      slide: cloneJSON(slide),
+      masters: cloneJSON(masters),
+      layouts: layout ? [cloneJSON(layout)] : [],
+      defaultMasterId: slide.masterId || this.defaultMasterId || null,
+      defaultLayoutId: slide.layoutId || this.defaultLayoutId || null
+    };
+  }
+  async copySlideToClipboard(slideId = this.currentSlideId) {
+    const payload = this.createSlideClipboardPayload(slideId);
+    if (!payload) return false;
+    const text = JSON.stringify(payload);
+    this.slideClipboard = payload;
+    try {
+      localStorage.setItem(SLIDE_CLIPBOARD_STORAGE_KEY, text);
+    } catch (err) {
+      console.warn("Slide clipboard storage fallback failed", err);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (err) {
+        console.warn("Native clipboard write failed; local fallback is available", err);
+      }
+    }
+    this.notify("slideCopy", { slideId });
+    return true;
+  }
+  importSlideClipboardPayload(payload) {
+    if (!payload || payload.type !== SLIDE_CLIPBOARD_TYPE || !payload.slide || !Array.isArray(payload.slide.elements)) return false;
+    this.pushCheckpoint();
+    const masterIdMap = {};
+    const layoutIdMap = {};
+    const incomingMasters = Array.isArray(payload.masters) ? payload.masters.map(normalizeMaster).filter(Boolean) : [];
+    incomingMasters.forEach(master => {
+      const originalId = master.id;
+      let id = originalId || makeId("master");
+      while ((this.masters || []).some(existing => existing && existing.id === id)) id = makeId("master");
+      master.id = id;
+      masterIdMap[originalId] = id;
+      master.elements = remapElementIds(master.elements, "master-elem").map(elem => ({ ...elem, locked: true, masterElement: true }));
+      this.masters.push(master);
+    });
+    const incomingLayouts = Array.isArray(payload.layouts) ? payload.layouts.map(layout => normalizeLayout({
+      ...layout,
+      masterId: layout && layout.masterId && masterIdMap[layout.masterId] ? masterIdMap[layout.masterId] : layout && layout.masterId
+    }, this.defaultMasterId)).filter(Boolean) : [];
+    incomingLayouts.forEach(layout => {
+      const originalId = layout.id;
+      let id = originalId || makeId("layout");
+      while ((this.layouts || []).some(existing => existing && existing.id === id)) id = makeId("layout");
+      layout.id = id;
+      layoutIdMap[originalId] = id;
+      layout.elements = remapElementIds(layout.elements, "layout-elem");
+      this.layouts.push(layout);
+    });
+    if ((!this.theme || Object.keys(this.theme).length === 0) && payload.theme && typeof payload.theme === "object") this.theme = cloneJSON(payload.theme);
+    const slide = cloneJSON(payload.slide);
+    slide.id = makeId("slide");
+    slide.masterId = slide.masterId && masterIdMap[slide.masterId] ? masterIdMap[slide.masterId] : (slide.masterId || null);
+    slide.layoutId = slide.layoutId && layoutIdMap[slide.layoutId] ? layoutIdMap[slide.layoutId] : (slide.layoutId || null);
+    if (slide.layoutId && !this.layouts.some(layout => layout && layout.id === slide.layoutId)) slide.layoutId = null;
+    if (slide.masterId && !this.masters.some(master => master && master.id === slide.masterId)) slide.masterId = this.defaultMasterId || null;
+    slide.elements = remapElementIds(slide.elements, "elem");
+    slide.notes = slide.notes || "";
+    const currentIndex = this.slides.findIndex(s => s.id === this.currentSlideId);
+    currentIndex !== -1 ? this.slides.splice(currentIndex + 1, 0, slide) : this.slides.push(slide);
+    this.currentSlideId = slide.id;
+    this.selectedElementId = null;
+    this.selectedElementIds = [];
+    if (!this.defaultMasterId && slide.masterId) this.defaultMasterId = slide.masterId;
+    if (!this.defaultLayoutId && slide.layoutId) this.defaultLayoutId = slide.layoutId;
+    this.saveToStorage();
+    this.notify("slidePaste", { slideId: slide.id });
+    return true;
+  }
+  async pasteSlideFromClipboard() {
+    let payload = null;
+    let nativeText = "";
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      try {
+        nativeText = await navigator.clipboard.readText();
+      } catch (err) {
+        console.warn("Native clipboard read failed; trying local fallback", err);
+      }
+    }
+    if (nativeText) {
+      try {
+        payload = JSON.parse(nativeText);
+      } catch {
+        return false;
+      }
+    } else {
+      const fallbackText = (() => {
+        try {
+          return localStorage.getItem(SLIDE_CLIPBOARD_STORAGE_KEY);
+        } catch {
+          return null;
+        }
+      })();
+      if (fallbackText) {
+        try {
+          payload = JSON.parse(fallbackText);
+        } catch {
+          payload = null;
+        }
+      } else if (this.slideClipboard) {
+        payload = this.slideClipboard;
+      }
+    }
+    return this.importSlideClipboardPayload(payload);
+  }
   deleteSlide(e) {
     if (this.slides.length <= 1) return;
     this.pushCheckpoint();
@@ -1213,17 +1364,23 @@ class I {
     if (!incomingMasters.length) return false;
     this.pushCheckpoint();
     const normalized = incomingMasters.map(normalizeMaster).filter(Boolean);
+    const masterIdMap = {};
     normalized.forEach(master => {
+      const originalId = master.id;
       let id = master.id;
       while (this.masters.some(existing => existing.id === id)) id = makeId("master");
       master.id = id;
+      masterIdMap[originalId] = id;
       master.elements = master.elements.map(elem => ({ ...elem, id: elem.id || makeId("master-elem"), locked: true, masterElement: true }));
       this.masters.push(master);
     });
     if (data.theme && typeof data.theme === "object") this.theme = cloneJSON(data.theme);
     this.defaultMasterId = normalized[0] ? normalized[0].id : this.defaultMasterId;
     if (Array.isArray(data.layouts)) {
-      this.layouts = data.layouts.map(layout => normalizeLayout(layout, this.defaultMasterId)).filter(Boolean);
+      this.layouts = data.layouts.map(layout => normalizeLayout({
+        ...layout,
+        masterId: layout && layout.masterId && masterIdMap[layout.masterId] ? masterIdMap[layout.masterId] : layout && layout.masterId
+      }, this.defaultMasterId)).filter(Boolean);
     }
     this.defaultLayoutId = data.defaultLayoutId || (this.layouts[0] && this.layouts[0].id) || this.defaultLayoutId;
     this.ensureDefaultLayouts(this.defaultMasterId);
@@ -1291,8 +1448,10 @@ class I {
     return true;
   }
   exportMasterJSON() {
+    this.ensureDefaultLayouts(this.defaultMasterId);
     return {
-      version: "1.8.0",
+      version: "1.8.3",
+      type: "slidecraft-template",
       theme: cloneJSON(this.theme || {}),
       masters: cloneJSON(this.masters || []),
       layouts: cloneJSON(this.layouts || []),
@@ -1309,7 +1468,7 @@ class I {
       layouts: this.layouts || [],
       defaultMasterId: this.defaultMasterId,
       defaultLayoutId: this.defaultLayoutId,
-      version: "1.8.0"
+      version: "1.8.3"
     };
   }
   updateSlideNotes(slideId, notesText, isDirect = false) {
@@ -1401,6 +1560,14 @@ class I {
       t.height = 80;
       t.content = "テキストを入力してください";
       t.style = { fontSize: 32, color: "#ffffff", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", textAlign: "left", fontFamily: "Inter, sans-serif", backgroundColor: "transparent" };
+    } else if (e === "pageNumber") {
+      t.type = "text";
+      t.x = 1080;
+      t.y = 650;
+      t.width = 120;
+      t.height = 36;
+      t.content = "{{page}} / {{total}}";
+      t.style = { fontSize: 18, color: "#cbd5e1", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", textAlign: "right", fontFamily: "Inter, sans-serif", backgroundColor: "transparent" };
     } else if (e === "image") {
       t.width = 400;
       t.height = 300;
@@ -1795,9 +1962,10 @@ class w {
     const e = this.state.getCurrentSlide();
     if (!e) { this.canvas.innerHTML = ""; return; }
     const isLight = document.body.classList.contains("light-theme");
+    const pageContext = getSlidePageContext(this.state.slides, e);
     applyBoardBackground(this.canvas, getEffectiveSlideBackground(this.state, e), isLight);
     this.canvas.innerHTML = "";
-    getRenderableSlideElements(this.state, e).filter(n => n.masterElement).forEach(n => this.canvas.appendChild(renderDOMElement(n, isLight)));
+    getRenderableSlideElements(this.state, e).filter(n => n.masterElement).forEach(n => this.canvas.appendChild(renderDOMElement(n, isLight, pageContext)));
     e.elements.forEach(n => this.canvas.appendChild(this.createElementDOM(n)));
     this.renderSelectionOutline();
   }
@@ -1918,7 +2086,27 @@ class k {
     const i = document.getElementById("slide-context-menu");
     i.style.left = e.clientX + "px", i.style.top = e.clientY + "px", i.style.display = "block";
     const t = this.state.slides.length <= 1;
-    i.innerHTML = '<div class="menu-item" id="ctx-duplicate">コピーを作成</div><div class="menu-item delete ' + (t ? "disabled" : "") + '" id="ctx-delete">スライドを削除</div>', document.getElementById("ctx-duplicate").addEventListener("click", () => this.state.duplicateSlide(n)), t || document.getElementById("ctx-delete").addEventListener("click", () => this.state.deleteSlide(n));
+    i.innerHTML = '<div class="menu-item" id="ctx-duplicate">コピーを作成</div><div class="menu-item" id="ctx-copy-slide">ページをコピー</div><div class="menu-item" id="ctx-paste-slide">ページを貼り付け</div><div class="menu-item delete ' + (t ? "disabled" : "") + '" id="ctx-delete">スライドを削除</div>';
+    document.getElementById("ctx-duplicate").addEventListener("click", () => this.state.duplicateSlide(n));
+    document.getElementById("ctx-copy-slide").addEventListener("click", async () => {
+      try {
+        await this.state.copySlideToClipboard(n);
+        alert("ページをコピーしました。別のSlideCraftで貼り付けできます。");
+      } catch (err) {
+        console.error("Slide copy failed", err);
+        alert("ページのコピーに失敗しました。ブラウザのクリップボード権限を確認してください。");
+      }
+    });
+    document.getElementById("ctx-paste-slide").addEventListener("click", async () => {
+      try {
+        const pasted = await this.state.pasteSlideFromClipboard();
+        pasted ? alert("ページを貼り付けました。") : alert("クリップボードにSlideCraftのページデータがありません。");
+      } catch (err) {
+        console.error("Slide paste failed", err);
+        alert("ページの貼り付けに失敗しました。クリップボードの内容またはブラウザ権限を確認してください。");
+      }
+    });
+    t || document.getElementById("ctx-delete").addEventListener("click", () => this.state.deleteSlide(n));
   }
   render() {
     this.listContainer.innerHTML = "";
@@ -1955,7 +2143,7 @@ class k {
         d.style.transform = "rotate(" + (o.rotation || 0) + "deg)";
         d.style.transformOrigin = "center center";
         if (o.type === "text") {
-          d.innerText = o.content || "";
+          d.innerText = replaceSlidePageTokens(o.content || "", getSlidePageContext(this.state.slides, n));
           const style = o.style || {};
           const fSize = Math.max(1.5, (style.fontSize || 16) * c);
           d.style.fontSize = fSize + "px";
@@ -2038,7 +2226,7 @@ class C {
   }
   exportMasterJSON() {
     const e = this.state.exportMasterJSON(), n = new Blob([JSON.stringify(e, null, 2)], { type: "application/json" }), i = URL.createObjectURL(n), t = document.createElement("a");
-    t.href = i, t.download = "slidecraft_master_" + Date.now() + ".json", document.body.appendChild(t), t.click(), document.body.removeChild(t), URL.revokeObjectURL(i);
+    t.href = i, t.download = "slidecraft_template_" + Date.now() + ".json", document.body.appendChild(t), t.click(), document.body.removeChild(t), URL.revokeObjectURL(i);
   }
   exportSingleHTML() {
     const e = JSON.stringify(this.state.getProjectJSON()), i = document.body.classList.contains("light-theme") ? "light-theme" : "", t = `* { margin:0; padding:0; box-sizing:border-box; }
@@ -2072,6 +2260,7 @@ var board=document.getElementById("presentation-board");
 	var progress=document.getElementById("presentation-progress-bar");
 	var isLight=document.body.classList.contains("light-theme");
 	function esc(v){return String(v||"").replace(/[&<>"']/g,function(ch){return ch==="&"?"&amp;":ch==="<"?"&lt;":ch===">"?"&gt;":ch==='"'?"&quot;":"&#39;";});}
+	function replaceSlidePageTokens(value,page,total){return String(value||"").replace(/\\{\\{\\s*pageTotal\\s*\\}\\}/gi,page+" / "+total).replace(/\\{\\{\\s*page\\s*\\}\\}/gi,page).replace(/\\{\\{\\s*total\\s*\\}\\}/gi,total);}
 	function normalizeEmbedUrl(value){var url=String(value||"").trim();if(!url)return"about:blank";var src=url.match(/\\bsrc\\s*=\\s*["']([^"']+)["']/i);if(src)url=src[1].trim();url=url.replace(/&amp;/g,"&");url=url.replace(/^(https?:\\/\\/)+(https?:\\/\\/)/i,"$2");url=url.replace(/^\\/\\//,"https://");if(!/^(https?:|about:|data:)/i.test(url))url="https://"+url;return url;}
 	function normalizeTableContent(elem){var rows=Math.max(1,parseInt(elem&&elem.rows,10)||3);var cols=Math.max(1,parseInt(elem&&elem.cols,10)||3);var source=Array.isArray(elem&&elem.content)?elem.content:[];return Array.from({length:rows},function(_,r){var row=Array.isArray(source[r])?source[r]:[];return Array.from({length:cols},function(_,c){return String(row[c]||"");});});}
 	function resizeNumberArray(values,length,fallback){var source=Array.isArray(values)?values:[];return Array.from({length:Math.max(1,parseInt(length,10)||1)},function(_,i){return Math.max(12,parseInt(source[i],10)||fallback);});}
@@ -2089,7 +2278,7 @@ board.innerHTML="";
 	getElements(slide).forEach(function(elem){var wrapper=document.createElement("div");wrapper.className="slide-element";wrapper.style.left=elem.x+"px";wrapper.style.top=elem.y+"px";wrapper.style.width=elem.width+"px";wrapper.style.height=elem.height+"px";wrapper.style.transform="rotate("+((elem.rotation||0))+"deg)";wrapper.style.transformOrigin="center center";
 	var inner=document.createElement("div");inner.className="element-inner";
 	if(elem.style&&elem.type!=="shape"&&elem.type!=="iframe"&&elem.type!=="table"){if(elem.style.backgroundColor)inner.style.backgroundColor=elem.style.backgroundColor;if(elem.style.borderRadius)inner.style.borderRadius=elem.style.borderRadius+"px";if(elem.style.borderWidth)inner.style.borderWidth=elem.style.borderWidth+"px";if(elem.style.borderColor)inner.style.borderColor=elem.style.borderColor;if(elem.style.borderStyle)inner.style.borderStyle=elem.style.borderStyle;}
-	if(elem.type==="text"){var txt=document.createElement("div");txt.className="text-inner";txt.innerHTML=elem.html||esc(elem.content).replace(/\\n/g,"<br>");
+	if(elem.type==="text"){var txt=document.createElement("div");txt.className="text-inner";txt.innerHTML=replaceSlidePageTokens(elem.html||esc(elem.content).replace(/\\n/g,"<br>"),currentIdx+1,slides.length);
 if(elem.style){if(elem.style.fontSize)txt.style.fontSize=elem.style.fontSize+"px";if(elem.style.color)txt.style.color=elem.style.color;if(elem.style.fontWeight)txt.style.fontWeight=elem.style.fontWeight;if(elem.style.fontStyle)txt.style.fontStyle=elem.style.fontStyle;if(elem.style.textDecoration)txt.style.textDecoration=elem.style.textDecoration;if(elem.style.textAlign)txt.style.textAlign=elem.style.textAlign;if(elem.style.fontFamily)txt.style.fontFamily=elem.style.fontFamily;}
 inner.appendChild(txt);}
 else if(elem.type==="image"){var img=document.createElement("img");img.className="shape-inner";img.src=elem.content;img.style.objectFit="cover";img.style.width="100%";img.style.height="100%";if(elem.style&&elem.style.borderRadius)img.style.borderRadius=elem.style.borderRadius+"px";inner.appendChild(img);}
@@ -2150,14 +2339,15 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
     try{
       const slides=this.state.slides.filter(i=>!!i);
       if(slides.length===0)return;
-      slides.forEach(i=>{
+      slides.forEach((i,pageIndex)=>{
         const t=document.createElement("div");
         t.className="pdf-render-page";
         const s=document.createElement("div");
         s.className="pdf-render-slide";
+        const pageContext={page:pageIndex+1,total:slides.length};
         applyBoardBackground(s,getEffectiveSlideBackground(this.state,i),n);
         getRenderableSlideElements(this.state,i).forEach(r=>{
-          r&&s.appendChild(renderDOMElement(r,n))
+          r&&s.appendChild(renderDOMElement(r,n,pageContext))
         });
         t.appendChild(s);
         e.appendChild(t);
@@ -2231,8 +2421,9 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
       const pptx=new PptxGenJS();
       pptx.defineLayout({name:"SC16x9",width:10,height:5.625});
       pptx.layout="SC16x9";
-      this.state.slides.forEach(sl=>{
+      this.state.slides.forEach((sl,slideIndex)=>{
         const ps=pptx.addSlide();
+        const pageContext={page:slideIndex+1,total:this.state.slides.length};
         const bg=getEffectiveSlideBackground(this.state,sl);
         if(bg.type==="color"&&bg.value){
           ps.background={fill:bg.value.replace("#","")};
@@ -2248,7 +2439,7 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
           if(el.type==="text"){
             const st=el.style||{};
 	            const opts={x:xi,y:yi,w:wi,h:hi,
-	              fontSize:st.fontSize?Math.round(st.fontSize*0.75):18,
+	              fontSize:st.fontSize?Math.round(st.fontSize*PPTX_FONT_SCALE):18,
 	              color:st.color?st.color.replace("#",""):"FFFFFF",
               bold:st.fontWeight==="bold",italic:st.fontStyle==="italic",
               underline:st.textDecoration==="underline",
@@ -2259,8 +2450,8 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
             if(st.backgroundColor&&st.backgroundColor!=="transparent"){
               opts.fill={color:st.backgroundColor.replace("#","")};
             }
-            const richText=getPPTXTextRuns(el);
-            ps.addText(richText||el.content||"",opts);
+            const richText=getPPTXTextRuns(el,pageContext);
+            ps.addText(richText||replaceSlidePageTokens(el.content||"",pageContext),opts);
           }else if(el.type==="image"&&el.content){
             let d=el.content;
             if(!d.startsWith("data:")) d=cache.get(d);
@@ -2290,7 +2481,7 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
 	                options:{
 	                  color:rowIndex===0&&st.header!==false?headerTextColor:textColor,
 	                  bold:rowIndex===0&&st.header!==false,
-	                  fontSize:rowIndex===0&&st.header!==false?Math.round((st.headerFontSize||st.fontSize||18)*0.75):Math.round((st.fontSize||18)*0.75),
+	                  fontSize:rowIndex===0&&st.header!==false?Math.round((st.headerFontSize||st.fontSize||18)*PPTX_FONT_SCALE):Math.round((st.fontSize||18)*PPTX_FONT_SCALE),
 	                  align:rowIndex===0&&st.header!==false?(st.headerTextAlign||st.textAlign||"left"):(st.textAlign||"left"),
 	                  fill:{color:rowIndex===0&&st.header!==false?headerColor:fillColor}
 	                }
@@ -2298,7 +2489,7 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
 	              ps.addTable(rows,{x:xi,y:yi,w:wi,h:hi,colW:layout.colWidths.map(v=>v/128),rowH:layout.rowHeights.map(v=>v/128),fontFace:st.fontFamily?st.fontFamily.split(",")[0].trim().replace(/['"]/g,""):"Arial",border:{type:st.borderStyle||"solid",color:borderColor,pt:st.borderWidth==null?1:st.borderWidth},rotate:el.rotation||0});
 	            }catch(err){
 	              ps.addShape("rect",{x:xi,y:yi,w:wi,h:hi,fill:{color:fillColor},line:{color:borderColor,width:st.borderWidth==null?1:st.borderWidth},rotate:el.rotation||0});
-	              ps.addText(data.map(row=>row.join("  |  ")).join("\\n"),{x:xi+0.05,y:yi+0.05,w:Math.max(0.1,wi-0.1),h:Math.max(0.1,hi-0.1),fontSize:st.fontSize?Math.round(st.fontSize*0.75):14,color:textColor,align:st.textAlign||"left",valign:"top",fit:"shrink",rotate:el.rotation||0});
+	              ps.addText(data.map(row=>row.join("  |  ")).join("\\n"),{x:xi+0.05,y:yi+0.05,w:Math.max(0.1,wi-0.1),h:Math.max(0.1,hi-0.1),fontSize:st.fontSize?Math.round(st.fontSize*PPTX_FONT_SCALE):14,color:textColor,align:st.textAlign||"left",valign:"top",fit:"shrink",rotate:el.rotation||0});
 	            }
 	          }
         });
@@ -2359,8 +2550,9 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
     if(!e||!n)return;
     n.innerHTML="";
     const i=document.body.classList.contains("light-theme");
+    const pageContext={page:this.activePresSlideIndex+1,total:this.state.slides.length};
     applyBoardBackground(n, getEffectiveSlideBackground(this.state, e), i);
-    getRenderableSlideElements(this.state, e).forEach(s=>{s&&n.appendChild(renderDOMElement(s,i))});
+    getRenderableSlideElements(this.state, e).forEach(s=>{s&&n.appendChild(renderDOMElement(s,i,pageContext))});
     document.getElementById("presentation-page-badge").innerText=this.activePresSlideIndex+1+" / "+this.state.slides.length;
     document.getElementById("presentation-progress-bar").style.width=(this.activePresSlideIndex+1)/this.state.slides.length*100+"%";
   }
@@ -2721,9 +2913,9 @@ class A {
       s.onload=r=>{
         try{
           const u=JSON.parse(r.target.result);
-          this.state.importMasterProject(u)?alert("マスターを読み込みました"):(console.log("Master import failed:",u),alert("無効なマスターJSONです"));
+          this.state.importMasterProject(u)?alert("テンプレートを読み込みました。マスターとレイアウトを利用できます。"):(console.log("Template import failed:",u),alert("無効なテンプレートJSONです"));
         }catch{
-          alert("マスターJSONの解析に失敗しました");
+          alert("テンプレートJSONの解析に失敗しました");
         }
         i.target.value="";
       };
@@ -2903,7 +3095,7 @@ function renderPlayerSlide() {
   applyBoardBackground(board, getEffectiveSlideBackground(deck, slide), isLight);
 
   getRenderableSlideElements(deck, slide).forEach(elem => {
-    board.appendChild(renderDOMElement(elem, isLight));
+    board.appendChild(renderDOMElement(elem, isLight, { page: playerCurrentIdx + 1, total: playerSlides.length }));
   });
 
   document.getElementById("player-page-badge").innerText = `${playerCurrentIdx + 1} / ${playerSlides.length}`;
@@ -3189,7 +3381,7 @@ function renderPresenterSlides() {
       const deck = { masters: presenterMasters, theme: presenterTheme, defaultMasterId: presenterDefaultMasterId };
       applyBoardBackground(currentBoard, getEffectiveSlideBackground(deck, currentSlide), isLight);
       getRenderableSlideElements(deck, currentSlide).forEach(elem => {
-        currentBoard.appendChild(renderDOMElement(elem, isLight));
+        currentBoard.appendChild(renderDOMElement(elem, isLight, { page: presenterCurrentIdx + 1, total: presenterSlides.length }));
       });
     }
   }
@@ -3203,7 +3395,7 @@ function renderPresenterSlides() {
       const deck = { masters: presenterMasters, theme: presenterTheme, defaultMasterId: presenterDefaultMasterId };
       applyBoardBackground(nextBoard, getEffectiveSlideBackground(deck, nextSlide), isLight);
       getRenderableSlideElements(deck, nextSlide).forEach(elem => {
-        nextBoard.appendChild(renderDOMElement(elem, isLight));
+        nextBoard.appendChild(renderDOMElement(elem, isLight, { page: presenterCurrentIdx + 2, total: presenterSlides.length }));
       });
     } else {
       // End of slides message
@@ -3274,7 +3466,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
-  console.log("SlideCraft v1.7.4 Initializing in Editor Mode...");
+  console.log("SlideCraft v1.8.3 Initializing in Editor Mode...");
   window.appState = new I();
   const f = window.appState;
   const e = new w(f, "slide-canvas", "canvas-wrapper");
@@ -3288,6 +3480,24 @@ document.addEventListener("DOMContentLoaded", () => {
     
 	    if ((y.key === "Delete" || y.key === "Backspace") && f.selectedElementId) {
 	      f.deleteSelectedElements ? f.deleteSelectedElements() : f.deleteElement(f.selectedElementId);
+	    }
+    if ((y.ctrlKey || y.metaKey) && y.shiftKey && y.key.toLowerCase() === "c") {
+      y.preventDefault();
+      f.copySlideToClipboard().then(() => alert("ページをコピーしました。別のSlideCraftで貼り付けできます。")).catch(err => {
+        console.error("Slide copy failed", err);
+        alert("ページのコピーに失敗しました。ブラウザのクリップボード権限を確認してください。");
+      });
+      return;
+    }
+	    if ((y.ctrlKey || y.metaKey) && y.shiftKey && y.key.toLowerCase() === "v") {
+	      y.preventDefault();
+	      f.pasteSlideFromClipboard().then(pasted => {
+	        pasted ? alert("ページを貼り付けました。") : alert("クリップボードにSlideCraftのページデータがありません。");
+	      }).catch(err => {
+	        console.error("Slide paste failed", err);
+	        alert("ページの貼り付けに失敗しました。クリップボードの内容またはブラウザ権限を確認してください。");
+	      });
+	      return;
 	    }
     if ((y.ctrlKey || y.metaKey) && y.key.toLowerCase() === "c") {
       f.copySelectedElement();
@@ -3354,6 +3564,32 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  const masterManualModal = document.getElementById("master-manual-modal");
+  const openMasterManual = () => {
+    if (!masterManualModal) return;
+    masterManualModal.classList.add("open");
+    masterManualModal.setAttribute("aria-hidden", "false");
+    if (s) s.style.display = "none";
+  };
+  const closeMasterManual = () => {
+    if (!masterManualModal) return;
+    masterManualModal.classList.remove("open");
+    masterManualModal.setAttribute("aria-hidden", "true");
+  };
+  const masterManualBtn = document.getElementById("btn-master-manual");
+  const closeMasterManualBtn = document.getElementById("btn-close-master-manual");
+  masterManualBtn && masterManualBtn.addEventListener("click", y => {
+    y.stopPropagation();
+    openMasterManual();
+  });
+  closeMasterManualBtn && closeMasterManualBtn.addEventListener("click", closeMasterManual);
+  masterManualModal && masterManualModal.addEventListener("click", y => {
+    if (y.target === masterManualModal) closeMasterManual();
+  });
+  document.addEventListener("keydown", y => {
+    if (y.key === "Escape" && masterManualModal && masterManualModal.classList.contains("open")) closeMasterManual();
+  });
+
   // Theme toggle
   const r = document.getElementById("btn-toggle-theme");
   const u = document.getElementById("icon-theme-light");
@@ -3375,6 +3611,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-add-triangle").addEventListener("click", () => f.addElement("shape", { shapeType: "triangle" }));
   document.getElementById("btn-add-iframe").addEventListener("click", () => f.addElement("iframe", { url: "https://example.com" }));
   document.getElementById("btn-add-table").addEventListener("click", () => f.addElement("table"));
+  document.getElementById("btn-add-page-number").addEventListener("click", () => f.addElement("pageNumber"));
 
   // Add Image triggers
   const d = document.getElementById("btn-add-image-trigger");
@@ -3597,6 +3834,87 @@ body {
   border-radius: 6px;
   border: 1px solid rgba(99,102,241,.25);
   font-family: Outfit, sans-serif;
+}
+.manual-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(5, 5, 8, .72);
+}
+.manual-modal.open {
+  display: flex;
+}
+.manual-dialog {
+  width: min(860px, 96vw);
+  max-height: min(760px, 90vh);
+  background: var(--bg-secondary);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.manual-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border-color);
+}
+.manual-header h2 {
+  font-size: 18px;
+  line-height: 1.3;
+  margin: 0;
+}
+.manual-close {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-main);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+.manual-body {
+  overflow-y: auto;
+  padding: 20px 24px 26px;
+  font-size: 14px;
+  line-height: 1.75;
+}
+.manual-body h3 {
+  font-size: 15px;
+  margin: 22px 0 8px;
+}
+.manual-body h3:first-child {
+  margin-top: 0;
+}
+.manual-body ul,
+.manual-body ol {
+  margin: 8px 0 14px 22px;
+}
+.manual-body code {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+.manual-note {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent-color);
+  background: var(--accent-light);
+  color: var(--text-main);
 }
 .header-toolbar {
   display: flex;
@@ -4579,13 +4897,17 @@ input[type=color]::-webkit-color-swatch {
           <div class="menu-divider"></div>
           <button id="btn-save-master" class="menu-dropdown-item">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-            マスター保存
+            テンプレート保存
           </button>
           <button id="btn-load-master-trigger" class="menu-dropdown-item" onclick="document.getElementById('input-import-master').click()">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-            マスター読込
+            テンプレート読込
           </button>
           <input type="file" id="input-import-master" accept="application/json" style="display:none">
+          <button id="btn-master-manual" class="menu-dropdown-item">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z"></path><path d="M8 7h8"></path><path d="M8 11h8"></path><path d="M8 15h5"></path></svg>
+            マスターマニュアル
+          </button>
           <div class="menu-divider"></div>
           <button id="btn-export-html" class="menu-dropdown-item primary">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path><polyline points="16 16 12 12 8 16"></polyline></svg>
@@ -4602,7 +4924,7 @@ input[type=color]::-webkit-color-swatch {
         </div>
       </div>
       <h1 class="logo-text">SlideCraft</h1>
-      <span class="logo-badge">v1.7.4</span>
+      <span class="logo-badge">v1.8.3</span>
     </div>
 
     <div class="toolbar-section add-tools">
@@ -4634,6 +4956,10 @@ input[type=color]::-webkit-color-swatch {
       <button id="btn-add-table" class="tool-btn shape-btn" title="表を挿入">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="3" y1="10" x2="21" y2="10"></line><line x1="9" y1="4" x2="9" y2="20"></line><line x1="15" y1="4" x2="15" y2="20"></line></svg>
         表
+      </button>
+      <button id="btn-add-page-number" class="tool-btn text-btn" title="ページ番号を挿入">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 8h8"></path><path d="M8 12h3"></path><path d="M15 15h1v4"></path><path d="M14 19h4"></path></svg>
+        ページ番号
       </button>
       <input type="file" id="input-add-image" accept="image/*" style="display:none">
     </div>
@@ -5089,5 +5415,65 @@ input[type=color]::-webkit-color-swatch {
   </div>
 
   <div id="print-container"></div>
+
+  <div id="master-manual-modal" class="manual-modal" aria-hidden="true">
+    <div class="manual-dialog" role="dialog" aria-modal="true" aria-labelledby="master-manual-title">
+      <div class="manual-header">
+        <h2 id="master-manual-title">スライドマスター作成マニュアル</h2>
+        <button id="btn-close-master-manual" class="manual-close" title="閉じる" aria-label="閉じる">&times;</button>
+      </div>
+      <div class="manual-body">
+        <h3>1. スライドマスターとは</h3>
+        <p>スライドマスターは、会社ロゴ、背景、フッター、ページ番号、共通フォント、共通カラーなどをまとめて管理するテンプレートです。一度作成しておくと、タイトルページ、目次ページ、通常ページ、裏表紙などのレイアウトに共通デザインを適用できます。</p>
+
+        <h3>2. マスターに入れるもの</h3>
+        <ul>
+          <li>会社ロゴ、背景色、背景画像</li>
+          <li>フッターライン、コピーライト、共通の装飾図形</li>
+          <li>ページ番号、会社テンプレートの基本カラー</li>
+        </ul>
+        <p>本文タイトルや各ページ固有の文章は、マスターではなくレイアウトまたは通常スライド側に置きます。</p>
+
+        <h3>3. マスター作成手順</h3>
+        <ol>
+          <li>新しいスライドを1枚作成します。</li>
+          <li>背景色、ロゴ、フッター、ページ番号などを配置します。</li>
+          <li>ページ番号を入れる場合は、ツールバーの「ページ番号」を押します。</li>
+          <li>必要に応じて文字サイズ、色、フォント、配置を調整します。</li>
+          <li>右側パネルの「マスター設定」から「現在から作成」を押します。</li>
+          <li>マスター名を入力します。例: Hara Corp 標準マスター</li>
+          <li>作成後、そのスライドの共通要素がマスターとして保存されます。</li>
+        </ol>
+
+        <h3>4. ページ番号の使い方</h3>
+        <p>ページ番号では <code>{{page}}</code>、<code>{{total}}</code>、<code>{{page}} / {{total}}</code>、<code>{{pageTotal}}</code> が使えます。出力時には <code>1 / 12</code> のように自動変換されます。</p>
+
+        <h3>5. レイアウトの作成</h3>
+        <p>マスターを作った後、ページ種別ごとのレイアウトを作ります。代表的なレイアウトはタイトルページ、目次ページ、通常ページ、裏表紙です。</p>
+        <p>レイアウトには、テキスト、図形、表、画像、iframeを入れられます。レイアウトに入れた画像は、新しいスライドをそのレイアウトから作成した時に一緒に複製されます。</p>
+        <ol>
+          <li>マスターを適用した状態で、タイトルや本文の仮テキストを配置します。</li>
+          <li>必要に応じて、会社ロゴ以外のページ固有画像や画像プレースホルダーを配置します。</li>
+          <li>右側パネルの「ページレイアウト」で「現在から作成」を押します。</li>
+          <li>レイアウト名を入力します。例: 通常ページ</li>
+          <li>次回以降、スライド追加時にそのレイアウトを選べます。</li>
+        </ol>
+
+        <h3>6. 保存と再利用</h3>
+        <p>会社テンプレートとして再利用する場合は、メニューから「テンプレート保存」を押します。保存されるJSONには、マスターとレイアウトがセットで含まれます。次回使うときは「テンプレート読込」から保存したJSONを選びます。</p>
+
+        <h3>7. 推奨作成順</h3>
+        <ol>
+          <li>共通デザイン用スライドを作る</li>
+          <li>ページ番号、ロゴ、背景、フッターを置く</li>
+          <li>マスター化する</li>
+          <li>タイトルページ、目次ページ、通常ページ、裏表紙のレイアウトを作る</li>
+          <li>テンプレートJSONとして保存する</li>
+        </ol>
+
+        <div class="manual-note">判断に迷ったら、全ページ共通ならマスター、ページ種別ごとに変えたいならレイアウト、そのページだけなら通常スライドに置きます。固定画像はアップロード画像にすると、テンプレートJSON内に保存されるため再利用が安定します。</div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
