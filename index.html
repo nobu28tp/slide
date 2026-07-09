@@ -1220,6 +1220,26 @@ function renderDOMElement(elem, isLight, pageContext) {
     inner.appendChild(renderTableElement(elem, false));
   } else if (elem.type === "chart") {
     inner.appendChild(renderSVGChart(elem));
+  } else if (elem.type === "svg") {
+    const container = document.createElement("div");
+    container.className = "svg-container";
+    container.style.width = "100%";
+    container.style.height = "100%";
+    container.style.overflow = "hidden";
+    container.innerHTML = elem.content || "";
+    const svgEl = container.querySelector("svg");
+    if (svgEl) {
+      if (!svgEl.getAttribute("viewBox")) {
+        const w = svgEl.getAttribute("width") || elem.width || 100;
+        const h = svgEl.getAttribute("height") || elem.height || 100;
+        svgEl.setAttribute("viewBox", `0 0 ${parseFloat(w)} ${parseFloat(h)}`);
+      }
+      svgEl.setAttribute("width", "100%");
+      svgEl.setAttribute("height", "100%");
+      svgEl.style.maxWidth = "100%";
+      svgEl.style.maxHeight = "100%";
+    }
+    inner.appendChild(container);
   } else if (elem.type === "mermaid") {
     const container = document.createElement("div");
     container.className = "mermaid-container";
@@ -1917,7 +1937,12 @@ class I {
 	      t.height = 400;
 	      t.content = "製品A,120\n製品B,200\n製品C,150";
 	      t.style = { chartType: "bar", chartColor: "#6366f1", showLegend: true };
-	    } else if (e === "mermaid") {
+	    } else if (e === "svg") {
+      t.width = 400;
+      t.height = 300;
+      t.content = n.content || `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><rect x="10" y="10" width="80" height="80" rx="10" fill="#6366f1"/><text x="50" y="55" font-size="20" fill="white" text-anchor="middle" font-family="sans-serif">SVG</text></svg>`;
+      t.style = { backgroundColor: "transparent", borderRadius: 0, borderWidth: 0, borderColor: "#ffffff", borderStyle: "none" };
+    } else if (e === "mermaid") {
 	      t.width = 600;
 	      t.height = 400;
 	      t.content = "graph TD\n  A[開始] --> B(処理)\n  B --> C[終了]";
@@ -3103,6 +3128,26 @@ else{shapeDom=document.createElementNS("http://www.w3.org/2000/svg","rect");shap
 	shapeDom.setAttribute("fill",fill);if(strokeW>0){shapeDom.setAttribute("stroke",stroke);shapeDom.setAttribute("stroke-width",""+(strokeW*3));}svg.appendChild(shapeDom);inner.appendChild(svg);}
 		else if(elem.type==="iframe"){var frame=document.createElement("iframe");frame.className="iframe-inner";frame.src=normalizeEmbedUrl(elem.content);frame.loading="lazy";frame.referrerPolicy="strict-origin-when-cross-origin";frame.allow="fullscreen; clipboard-read; clipboard-write";frame.allowFullscreen=true;inner.appendChild(frame);}
 	else if(elem.type==="table"){inner.appendChild(renderTableElement(elem));}
+	else if(elem.type==="svg"){
+		var container=document.createElement("div");
+		container.style.width="100%";
+		container.style.height="100%";
+		container.style.overflow="hidden";
+		container.innerHTML=elem.content||"";
+		var svgEl=container.querySelector("svg");
+		if(svgEl){
+			if(!svgEl.getAttribute("viewBox")){
+				var w=svgEl.getAttribute("width")||elem.width||100;
+				var h=svgEl.getAttribute("height")||elem.height||100;
+				svgEl.setAttribute("viewBox","0 0 "+parseFloat(w)+" "+parseFloat(h));
+			}
+			svgEl.setAttribute("width","100%");
+			svgEl.setAttribute("height","100%");
+			svgEl.style.maxWidth="100%";
+			svgEl.style.maxHeight="100%";
+		}
+		inner.appendChild(container);
+	}
 wrapper.appendChild(inner);board.appendChild(wrapper);});
 badge.innerText=(currentIdx+1)+" / "+slides.length;progress.style.width=((currentIdx+1)/slides.length*100)+"%";}
 function prev(){if(currentIdx>0){currentIdx--;renderSlide();}}
@@ -3443,6 +3488,23 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
               ps.addShape("rect", { x: xi, y: yi, w: wi, h: hi, fill: { color: "EEEEEE" }, line: { color: "CCCCCC", width: 1 }, rotate: el.rotation || 0 });
               ps.addText("Mermaid Diagram\n" + (el.content || ""), { x: xi, y: yi, w: wi, h: hi, fontSize: 12, color: "555555", align: "center", valign: "mid", rotate: el.rotation || 0 });
             }
+          } else if (el.type === "svg") {
+            try {
+              if (el.content) {
+                const pngData = await this._svgToPngB64(el.content, el.width || 400, el.height || 300);
+                if (pngData) {
+                  ps.addImage({ data: pngData, x: xi, y: yi, w: wi, h: hi, rotate: el.rotation || 0 });
+                } else {
+                  throw new Error("PNG conversion failed");
+                }
+              } else {
+                throw new Error("No SVG content");
+              }
+            } catch (err) {
+              console.warn("SVG PPTX conversion failed:", err);
+              ps.addShape("rect", { x: xi, y: yi, w: wi, h: hi, fill: { color: "EEEEEE" }, line: { color: "CCCCCC", width: 1 }, rotate: el.rotation || 0 });
+              ps.addText("SVG Render Error", { x: xi, y: yi, w: wi, h: hi, fontSize: 12, color: "FF0000", align: "center", valign: "mid", rotate: el.rotation || 0 });
+            }
           }
         }
         if (sl.notes) ps.addNotes(sl.notes);
@@ -3542,12 +3604,14 @@ class A {
     const chartSection=document.getElementById("inspector-chart-section");
     const mermaidSection=document.getElementById("inspector-mermaid-section");
     const imageSection=document.getElementById("inspector-image-section");
+    const svgSection=document.getElementById("inspector-svg-section");
     
     a.style.display=e.type==="iframe"?"block":"none";
     tableSection.style.display=e.type==="table"?"block":"none";
     if (chartSection) chartSection.style.display=e.type==="chart"?"block":"none";
     if (mermaidSection) mermaidSection.style.display=e.type==="mermaid"?"block":"none";
     if (imageSection) imageSection.style.display=e.type==="image"?"block":"none";
+    if (svgSection) svgSection.style.display=e.type==="svg"?"block":"none";
     
     e.type==="iframe"&&(document.getElementById("input-iframe-url").value=e.content||"");
     if(e.type==="chart" && chartSection){
@@ -4013,6 +4077,42 @@ class A {
           compressImageBtn.disabled = false;
           compressImageBtn.innerText = "画像の圧縮（軽量化）";
         }
+      });
+    }
+
+    // SVG Inspector & Modal Events
+    const btnEditSvgCode = document.getElementById("btn-edit-svg-code-trigger");
+    const svgCodeModal = document.getElementById("svg-code-modal");
+    const btnCloseSvgCode = document.getElementById("btn-close-svg-code");
+    const btnSaveSvgCode = document.getElementById("btn-save-svg-code");
+    const textareaSvgCode = document.getElementById("textarea-svg-code");
+    
+    if (btnEditSvgCode && svgCodeModal && btnCloseSvgCode && btnSaveSvgCode && textareaSvgCode) {
+      btnEditSvgCode.addEventListener("click", () => {
+        const elem = this.state.getSelectedElement();
+        if (!elem || elem.type !== "svg") return;
+        textareaSvgCode.value = elem.content || "";
+        svgCodeModal.classList.add("open");
+      });
+      
+      const closeSvgModal = () => {
+        svgCodeModal.classList.remove("open");
+        textareaSvgCode.value = "";
+      };
+      
+      btnCloseSvgCode.addEventListener("click", closeSvgModal);
+      
+      btnSaveSvgCode.addEventListener("click", () => {
+        const id = this.state.selectedElementId;
+        if (!id) return;
+        
+        let code = textareaSvgCode.value;
+        // 簡易サニタイズ (scriptタグとonXXX属性の削除)
+        code = code.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
+        code = code.replace(/\son\w+\s*=\s*(['"][^'"]*['"]|[^\s>]+)/gi, "");
+        
+        this.state.updateElement(id, { content: code });
+        closeSvgModal();
       });
     }
   }
@@ -5106,6 +5206,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-add-iframe").addEventListener("click", () => f.addElement("iframe", { url: "https://example.com" }));
   document.getElementById("btn-add-table").addEventListener("click", () => f.addElement("table"));
   document.getElementById("btn-add-page-number").addEventListener("click", () => f.addElement("pageNumber"));
+  document.getElementById("btn-add-svg-trigger").addEventListener("click", () => f.addElement("svg"));
 
   // Add Image triggers
   const d = document.getElementById("btn-add-image-trigger");
@@ -5115,14 +5216,24 @@ document.addEventListener("DOMContentLoaded", () => {
     c.addEventListener("change", y => {
       const m = y.target.files[0];
       if (!m) return;
-      const h = new FileReader();
-      h.onload = async l => {
-        const originalUrl = l.target.result;
-        const compressedUrl = await compressImageBase64(originalUrl, 1280, 0.8);
-        f.addElement("image", { url: compressedUrl });
-        c.value = "";
-      };
-      h.readAsDataURL(m);
+      if (m.type === "image/svg+xml" || m.name.endsWith(".svg")) {
+        const h = new FileReader();
+        h.onload = l => {
+          const svgContent = l.target.result;
+          f.addElement("svg", { content: svgContent });
+          c.value = "";
+        };
+        h.readAsText(m);
+      } else {
+        const h = new FileReader();
+        h.onload = async l => {
+          const originalUrl = l.target.result;
+          const compressedUrl = await compressImageBase64(originalUrl, 1280, 0.8);
+          f.addElement("image", { url: compressedUrl });
+          c.value = "";
+        };
+        h.readAsDataURL(m);
+      }
     });
   }
 
@@ -5297,6 +5408,9 @@ body {
   flex-direction: column;
 }
 #app-header {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100vw;
   height: 60px;
   background-color: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
@@ -5307,6 +5421,7 @@ body {
   padding: 0 20px;
   z-index: 100;
   box-shadow: var(--shadow-sm);
+  overflow: visible;
 }
 .logo-section {
   display: flex;
@@ -5424,6 +5539,9 @@ body {
   flex: 0 0 auto;
   min-width: max-content;
   align-self: center;
+  margin-left: auto;
+  padding-right: 12px;
+  height: 100%;
 }
 #app-workspace {
   flex: 1;
@@ -6419,11 +6537,15 @@ input[type=color]::-webkit-color-swatch {
     white-space: nowrap;
   }
   #btn-start-presentation {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex: 0 0 auto;
     min-width: max-content;
-    height: 42px;
+    height: 38px;
     padding: 0 18px;
     white-space: nowrap;
+    box-sizing: border-box;
   }
 
   /* Align Tools Grid */
@@ -6585,7 +6707,11 @@ input[type=color]::-webkit-color-swatch {
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
         Mermaid
       </button>
-      <input type="file" id="input-add-image" accept="image/*" style="display:none">
+      <button id="btn-add-svg-trigger" class="tool-btn shape-btn" title="SVGを挿入">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M8 12h8"></path><path d="M12 8v8"></path></svg>
+        SVG
+      </button>
+      <input type="file" id="input-add-image" accept="image/*,.svg" style="display:none">
     </div>
 
     <div class="header-toolbar">
@@ -6912,6 +7038,14 @@ input[type=color]::-webkit-color-swatch {
             <span class="form-help">フローチャート、シーケンス図、円グラフなどを記述できます。</span>
           </div>
 
+          <div id="inspector-svg-section" class="inspector-section" style="display:none;">
+            <span class="inspector-label">SVG画像設定</span>
+            <button id="btn-edit-svg-code-trigger" class="action-btn-main secondary" style="width:100%;margin-top:6px;font-size:12px;padding:8px 12px;display:flex;justify-content:center;gap:6px;">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+              SVGコードを直接編集...
+            </button>
+          </div>
+
           <!-- 画像設定セクション -->
           <div id="inspector-image-section" class="inspector-group" style="display:none;">
             <div class="inspector-label">画像設定</div>
@@ -7127,6 +7261,23 @@ input[type=color]::-webkit-color-swatch {
       </div>
       <div class="modal-body" style="max-height:60vh;overflow-y:auto;">
         <div id="quality-check-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SVGコード編集モーダル -->
+  <div id="svg-code-modal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-dialog" style="max-width:680px;">
+      <div class="modal-header">
+        <h2 class="modal-title">SVGコードの編集</h2>
+        <button id="btn-close-svg-code" class="tool-btn icon-btn" title="閉じる">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:12px;color:var(--text-muted);margin-top:0;margin-bottom:12px;">直接SVGのXMLマークアップを入力・編集できます。セキュリティ上、&lt;script&gt;タグ等は自動的に除去されます。</p>
+        <textarea id="textarea-svg-code" class="form-textarea" style="width:100%;height:300px;font-family:monospace;font-size:12px;background:#1e1e2e;color:#cdd6f4;border-color:#313244;resize:vertical;" placeholder="&lt;svg ...&gt; ... &lt;/svg&gt;"></textarea>
+        <div style="display:flex;justify-content:flex-end;gap:12px;margin-top:16px;">
+          <button id="btn-save-svg-code" class="action-btn-main" style="width:auto;padding:10px 24px;">適用する</button>
+        </div>
       </div>
     </div>
   </div>
