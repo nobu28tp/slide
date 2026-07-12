@@ -436,6 +436,58 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 const E = "slidecraft_project_data";
 const S = 1280;
 const x = 720;
+// プロジェクト本体（画像・SVGを含む）は localStorage ではなく IndexedDB に保存する。
+// localStorage はプロジェクト一覧などの小さな設定だけに限定する。
+const PROJECT_DB_NAME = "slidecraft_projects_v1";
+const PROJECT_STORE_NAME = "projects";
+const projectDatabase = (() => {
+  let databasePromise;
+  return {
+    open() {
+      if (databasePromise) return databasePromise;
+      databasePromise = new Promise((resolve, reject) => {
+        if (!window.indexedDB) {
+          reject(new Error("IndexedDB is not available in this browser."));
+          return;
+        }
+        const request = indexedDB.open(PROJECT_DB_NAME, 1);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(PROJECT_STORE_NAME)) {
+            db.createObjectStore(PROJECT_STORE_NAME, { keyPath: "id" });
+          }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error("IndexedDB could not be opened."));
+      });
+      return databasePromise;
+    },
+    async get(id) {
+      const db = await this.open();
+      return new Promise((resolve, reject) => {
+        const request = db.transaction(PROJECT_STORE_NAME, "readonly").objectStore(PROJECT_STORE_NAME).get(id);
+        request.onsuccess = () => resolve(request.result ? request.result.data : null);
+        request.onerror = () => reject(request.error || new Error("Project could not be read."));
+      });
+    },
+    async put(id, data) {
+      const db = await this.open();
+      return new Promise((resolve, reject) => {
+        const request = db.transaction(PROJECT_STORE_NAME, "readwrite").objectStore(PROJECT_STORE_NAME).put({ id, data, updatedAt: Date.now() });
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error || new Error("Project could not be saved."));
+      });
+    },
+    async remove(id) {
+      const db = await this.open();
+      return new Promise((resolve, reject) => {
+        const request = db.transaction(PROJECT_STORE_NAME, "readwrite").objectStore(PROJECT_STORE_NAME).delete(id);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error || new Error("Project could not be deleted."));
+      });
+    }
+  };
+})();
 const syncChannel = (() => {
   try {
     return new BroadcastChannel("slidecraft_sync");
@@ -1124,6 +1176,46 @@ function renderSVGChart(elem) {
   return container;
 }
 
+// SVGをHTML文字列として解釈せず、XMLとして検証してからDOMへ取り込む。
+// これにより編集キャンバスとプレビューで同じ描画処理を利用できる。
+function createSVGContainer(svgCode, fallbackWidth = 100, fallbackHeight = 100) {
+  const container = document.createElement("div");
+  container.className = "svg-container";
+  container.style.width = "100%";
+  container.style.height = "100%";
+  container.style.overflow = "hidden";
+
+  const documentSvg = new DOMParser().parseFromString(String(svgCode || ""), "image/svg+xml");
+  if (documentSvg.querySelector("parsererror") || !documentSvg.documentElement || documentSvg.documentElement.localName !== "svg") {
+    const message = document.createElement("div");
+    message.style.cssText = "color:#dc2626;font-size:12px;padding:8px;white-space:pre-wrap;";
+    message.textContent = "SVGコードを読み込めませんでした。<svg>から</svg>までのコードを確認してください。";
+    container.appendChild(message);
+    return container;
+  }
+
+  const svgEl = document.importNode(documentSvg.documentElement, true);
+  svgEl.querySelectorAll("script, foreignObject").forEach(node => node.remove());
+  svgEl.querySelectorAll("*").forEach(node => {
+    [...node.attributes].forEach(attribute => {
+      if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name);
+    });
+  });
+  if (!svgEl.getAttribute("viewBox")) {
+    const width = parseFloat(svgEl.getAttribute("width")) || fallbackWidth;
+    const height = parseFloat(svgEl.getAttribute("height")) || fallbackHeight;
+    svgEl.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  }
+  svgEl.setAttribute("width", "100%");
+  svgEl.setAttribute("height", "100%");
+  svgEl.setAttribute("preserveAspectRatio", svgEl.getAttribute("preserveAspectRatio") || "xMidYMid meet");
+  svgEl.style.display = "block";
+  svgEl.style.maxWidth = "100%";
+  svgEl.style.maxHeight = "100%";
+  container.appendChild(svgEl);
+  return container;
+}
+
 // Helper function to render a slide element to a DOM container (used by Player/Presenter/Print)
 function renderDOMElement(elem, isLight, pageContext) {
   const wrapper = document.createElement("div");
@@ -1221,25 +1313,7 @@ function renderDOMElement(elem, isLight, pageContext) {
   } else if (elem.type === "chart") {
     inner.appendChild(renderSVGChart(elem));
   } else if (elem.type === "svg") {
-    const container = document.createElement("div");
-    container.className = "svg-container";
-    container.style.width = "100%";
-    container.style.height = "100%";
-    container.style.overflow = "hidden";
-    container.innerHTML = elem.content || "";
-    const svgEl = container.querySelector("svg");
-    if (svgEl) {
-      if (!svgEl.getAttribute("viewBox")) {
-        const w = svgEl.getAttribute("width") || elem.width || 100;
-        const h = svgEl.getAttribute("height") || elem.height || 100;
-        svgEl.setAttribute("viewBox", `0 0 ${parseFloat(w)} ${parseFloat(h)}`);
-      }
-      svgEl.setAttribute("width", "100%");
-      svgEl.setAttribute("height", "100%");
-      svgEl.style.maxWidth = "100%";
-      svgEl.style.maxHeight = "100%";
-    }
-    inner.appendChild(container);
+    inner.appendChild(createSVGContainer(elem.content, elem.width, elem.height));
   } else if (elem.type === "mermaid") {
     const container = document.createElement("div");
     container.className = "mermaid-container";
@@ -1330,8 +1404,14 @@ class I {
     this.maxHistorySize = 50;
     this.clipboard = null;
     this.listeners = new Set();
-    this.loadFromStorage();
-    this.slides.length === 0 && this.createInitialProject();
+    this.ready = this.loadFromStorage().then(() => {
+      if (this.slides.length === 0) this.createInitialProject();
+      this.notify("projectLoad");
+    }).catch(error => {
+      console.error("Project initialization failed", error);
+      if (this.slides.length === 0) this.createInitialProject();
+      this.notify("projectLoad");
+    });
   }
   subscribe(e) {
     return this.listeners.add(e), () => this.listeners.delete(e);
@@ -2385,32 +2465,39 @@ class I {
     this.notify("projectImport");
     return true;
   }
-  saveToStorage() {
+  async saveToStorage() {
     try {
-      const data = JSON.stringify(this.getProjectJSON());
-      localStorage.setItem(`slidecraft_project_data_${this.projectId}`, data);
-      if (this.projectId === "default") {
-        localStorage.setItem(E, data);
-      }
+      const data = this.getProjectJSON();
+      await projectDatabase.put(this.projectId, data);
       this.updateProjectInList();
       syncChannel.postMessage({ type: "PROJECT_UPDATE", slides: this.slides, masters: this.masters, layouts: this.layouts, theme: this.theme, defaultMasterId: this.defaultMasterId, defaultLayoutId: this.defaultLayoutId });
     } catch (e) {
       console.error("Save failed", e);
+      const message = e && e.name === "QuotaExceededError"
+        ? "保存領域が不足しています。画像を減らすか、JSONでバックアップしてください。"
+        : "プロジェクトを保存できませんでした。JSONでバックアップしてください。";
+      this.notify("storageError", { message, error: e });
     }
   }
-  loadFromStorage() {
+  async loadFromStorage() {
     try {
       const activeId = localStorage.getItem("slidecraft_active_project_id") || "default";
       this.projectId = activeId;
       this.projectName = localStorage.getItem(`slidecraft_project_name_${this.projectId}`) || (this.projectId === "default" ? "デフォルトプロジェクト" : "無題のプロジェクト");
       
-      let data = localStorage.getItem(`slidecraft_project_data_${this.projectId}`);
-      if (!data && this.projectId === "default") {
-        data = localStorage.getItem(E);
+      let n = await projectDatabase.get(this.projectId);
+      // 旧版のlocalStorageデータが残っている場合だけ、一度読み込みIndexedDBへ移行する。
+      if (!n) {
+        const legacyData = localStorage.getItem(`slidecraft_project_data_${this.projectId}`) || (this.projectId === "default" ? localStorage.getItem(E) : null);
+        if (legacyData) {
+          n = JSON.parse(legacyData);
+          await projectDatabase.put(this.projectId, n);
+          localStorage.removeItem(`slidecraft_project_data_${this.projectId}`);
+          if (this.projectId === "default") localStorage.removeItem(E);
+        }
       }
       
-      if (data) {
-        const n = JSON.parse(data);
+      if (n) {
         if (n && Array.isArray(n.slides) && n.slides.length > 0) {
           this.theme = n.theme && typeof n.theme === "object" ? cloneJSON(n.theme) : {};
           this.masters = Array.isArray(n.masters) ? n.masters.map(normalizeMaster).filter(Boolean) : [];
@@ -2476,11 +2563,11 @@ class I {
       return [{ id: "default", name: "デフォルトプロジェクト", updatedAt: Date.now() }];
     }
   }
-  switchProject(id) {
+  async switchProject(id) {
     if (id === this.projectId) return;
     this.projectId = id;
     localStorage.setItem("slidecraft_active_project_id", id);
-    this.loadFromStorage();
+    await this.loadFromStorage();
     if (this.slides.length === 0) {
       this.createInitialProject();
     }
@@ -2525,14 +2612,14 @@ class I {
     } catch {}
     this.notify("projectRename");
   }
-  duplicateProject(id, newName = "") {
+  async duplicateProject(id, newName = "") {
     try {
-      const data = localStorage.getItem(`slidecraft_project_data_${id}`) || (id === "default" ? localStorage.getItem(E) : null);
+      const data = await projectDatabase.get(id);
       if (!data) return false;
       const newId = "proj-" + Math.random().toString(36).substr(2, 9);
       const originName = localStorage.getItem(`slidecraft_project_name_${id}`) || (id === "default" ? "デフォルトプロジェクト" : "無題のプロジェクト");
       const name = newName || `${originName} (コピー)`;
-      localStorage.setItem(`slidecraft_project_data_${newId}`, data);
+      await projectDatabase.put(newId, data);
       localStorage.setItem(`slidecraft_project_name_${newId}`, name);
       const rawList = localStorage.getItem("slidecraft_project_list") || "[]";
       let list = JSON.parse(rawList);
@@ -2548,12 +2635,13 @@ class I {
       return false;
     }
   }
-  deleteProject(id) {
+  async deleteProject(id) {
     if (id === "default") {
       alert("デフォルトプロジェクトは削除できません。");
       return false;
     }
     this.pushCheckpoint();
+    await projectDatabase.remove(id);
     localStorage.removeItem(`slidecraft_project_data_${id}`);
     localStorage.removeItem(`slidecraft_project_name_${id}`);
     try {
@@ -2563,7 +2651,7 @@ class I {
       localStorage.setItem("slidecraft_project_list", JSON.stringify(list));
     } catch {}
     if (id === this.projectId) {
-      this.switchProject("default");
+      await this.switchProject("default");
     } else {
       this.notify("projectDelete");
     }
@@ -2836,6 +2924,8 @@ class w {
       i.appendChild(t);
     } else if (e.type === "chart") {
       i.appendChild(renderSVGChart(e));
+    } else if (e.type === "svg") {
+      i.appendChild(createSVGContainer(e.content, e.width, e.height));
     } else if (e.type === "mermaid") {
       const container = document.createElement("div");
       container.className = "mermaid-container";
@@ -3580,6 +3670,58 @@ window.addEventListener("resize",updateScale);updateScale();renderSlide();`,r=`<
   }
 }
 
+function normalizeHexColor(value){
+  const normalized=String(value||"").trim();
+  return /^#?[0-9a-fA-F]{6}$/.test(normalized)?"#"+normalized.replace(/^#/,"").toLowerCase():null;
+}
+
+function setColorControlValue(colorInputId,value,fallback){
+  const colorInput=document.getElementById(colorInputId);
+  const hexInput=document.getElementById(colorInputId+"-hex");
+  const color=normalizeHexColor(value)||fallback;
+  if(colorInput)colorInput.value=color;
+  if(hexInput){
+    hexInput.value=color;
+    hexInput.removeAttribute("aria-invalid");
+  }
+  return color;
+}
+
+function bindColorControl(colorInputId,onChange){
+  const colorInput=document.getElementById(colorInputId);
+  if(!colorInput)return;
+  const wrapper=document.createElement("div");
+  wrapper.className="color-input-pair";
+  colorInput.parentNode.insertBefore(wrapper,colorInput);
+  wrapper.appendChild(colorInput);
+
+  const hexInput=document.createElement("input");
+  hexInput.type="text";
+  hexInput.id=colorInputId+"-hex";
+  hexInput.className="form-input color-code-input";
+  hexInput.maxLength=7;
+  hexInput.placeholder="#RRGGBB";
+  hexInput.setAttribute("aria-label","6桁のカラーコード");
+  hexInput.value=colorInput.value;
+  wrapper.appendChild(hexInput);
+
+  colorInput.addEventListener("change",()=>{
+    setColorControlValue(colorInputId,colorInput.value,colorInput.value);
+    onChange(colorInput.value);
+  });
+  const applyHex=()=>{
+    const color=normalizeHexColor(hexInput.value);
+    if(!color){hexInput.setAttribute("aria-invalid","true");return;}
+    setColorControlValue(colorInputId,color,color);
+    onChange(color);
+  };
+  hexInput.addEventListener("change",applyHex);
+}
+
+function syncAllColorCodeInputs(){
+  document.querySelectorAll('input[type="color"]').forEach(input=>setColorControlValue(input.id,input.value,input.value));
+}
+
 class A {
   constructor(e){
     this.state=e,this.exporter=new C(e),this.elemPanel=document.getElementById("element-inspector"),this.slidePanel=document.getElementById("slide-inspector"),this.savedTextRange=null,this.savedTextElementId=null,this.state.subscribe(()=>this.updatePanels()),this.bindDOMEvents(),this.updatePanels();
@@ -3591,6 +3733,7 @@ class A {
       alignSection.style.display = hasMultiple ? "block" : "none";
     }
     this.state.selectedElementId?(this.elemPanel.style.display="block",this.slidePanel.style.display="none",this.loadElementProperties()):(this.elemPanel.style.display="none",this.slidePanel.style.display="block",this.loadSlideProperties());
+    syncAllColorCodeInputs();
   }
   loadElementProperties(){
     const e=this.state.getSelectedElement();
@@ -3618,7 +3761,7 @@ class A {
       const t=e.style||{};
       document.getElementById("input-chart-type").value=t.chartType||"bar";
       document.getElementById("input-chart-data").value=e.content||"";
-      document.getElementById("input-chart-color").value=t.chartColor||"#6366f1";
+      setColorControlValue("input-chart-color",t.chartColor,"#6366f1");
       document.getElementById("input-chart-legend").checked=t.showLegend!==false;
     }
     if(e.type==="mermaid" && mermaidSection){
@@ -3637,12 +3780,12 @@ class A {
       document.getElementById("input-table-col-width").value=layout.colWidths[(parseInt(document.getElementById("input-table-col-index").value,10)||1)-1]||120;
       document.getElementById("input-table-row-height").value=layout.rowHeights[(parseInt(document.getElementById("input-table-row-index").value,10)||1)-1]||40;
       document.getElementById("input-table-font-size").value=t.fontSize||18;
-      document.getElementById("input-table-font-color").value=t.color||"#ffffff";
+      setColorControlValue("input-table-font-color",t.color,"#ffffff");
       document.getElementById("input-table-header-font-size").value=t.headerFontSize||t.fontSize||18;
-      document.getElementById("input-table-header-font-color").value=t.headerTextColor||"#ffffff";
-      document.getElementById("input-table-bg-color").value=t.backgroundColor&&t.backgroundColor.startsWith("#")?t.backgroundColor:"#111827";
-      document.getElementById("input-table-header-color").value=t.headerColor||"#3730a3";
-      document.getElementById("input-table-border-color").value=t.borderColor&&t.borderColor.startsWith("#")?t.borderColor:"#94a3b8";
+      setColorControlValue("input-table-header-font-color",t.headerTextColor,"#ffffff");
+      setColorControlValue("input-table-bg-color",t.backgroundColor,"#111827");
+      setColorControlValue("input-table-header-color",t.headerColor,"#3730a3");
+      setColorControlValue("input-table-border-color",t.borderColor,"#94a3b8");
       document.getElementById("input-table-border-width").value=t.borderWidth==null?1:t.borderWidth;
       document.getElementById("input-table-header").checked=t.header!==false;
       document.getElementById("input-table-align").value=t.textAlign||"left";
@@ -3653,7 +3796,7 @@ class A {
       const t=e.style||{};
       document.getElementById("input-font-family").value=t.fontFamily||"Inter, sans-serif";
       document.getElementById("input-font-size").value=t.fontSize||24;
-      document.getElementById("input-font-color").value=t.color||"#ffffff";
+      setColorControlValue("input-font-color",t.color,"#ffffff");
       this.toggleActiveState("btn-font-bold",t.fontWeight==="bold");
       this.toggleActiveState("btn-font-italic",t.fontStyle==="italic");
       this.toggleActiveState("btn-font-underline",t.textDecoration==="underline");
@@ -3663,10 +3806,10 @@ class A {
     } else if(e.type==="shape"){
       n.style.display="none",i.style.display="block";
       const t=e.style||{};
-      document.getElementById("input-bg-color").value=t.backgroundColor||"#6366f1";
+      setColorControlValue("input-bg-color",t.backgroundColor,"#6366f1");
       document.getElementById("input-border-radius").value=t.borderRadius||0;
       document.getElementById("input-border-width").value=t.borderWidth||0;
-      document.getElementById("input-border-color").value=t.borderColor||"#ffffff";
+      setColorControlValue("input-border-color",t.borderColor,"#ffffff");
       document.getElementById("input-border-style").value=t.borderStyle||"none";
     } else if(e.type!=="chart" && e.type!=="mermaid" && e.type!=="image") {
       n.style.display="none",i.style.display="none";
@@ -3697,7 +3840,7 @@ class A {
     i.style.display=n.type==="color"?"block":"none";
     t.style.display=n.type==="gradient"?"block":"none";
     s.style.display=n.type==="image"?"block":"none";
-	    n.type==="color"?document.getElementById("input-slide-bg-color").value=n.value||"#1e1e24":n.type==="gradient"?document.getElementById("input-slide-bg-gradient").value=n.value||"":n.type==="image"&&(document.getElementById("input-slide-bg-image").value=n.value||"");
+    	    n.type==="color"?setColorControlValue("input-slide-bg-color",n.value,"#1e1e24"):n.type==="gradient"?document.getElementById("input-slide-bg-gradient").value=n.value||"":n.type==="image"&&(document.getElementById("input-slide-bg-image").value=n.value||"");
 	  }
 	  getActiveTextEditor(id){
 	    const canvas=document.getElementById("slide-canvas");
@@ -3853,19 +3996,19 @@ class A {
 		    document.getElementById("input-table-col-width").addEventListener("change",updateTableColWidth);
 		    document.getElementById("input-table-row-height").addEventListener("change",updateTableRowHeight);
 		    document.getElementById("input-table-font-size").addEventListener("input",i=>e("fontSize",parseInt(i.target.value)||12,!0));
-		    document.getElementById("input-table-font-color").addEventListener("change",i=>e("color",i.target.value,!0));
+    		    bindColorControl("input-table-font-color",color=>e("color",color,!0));
 		    document.getElementById("input-table-header-font-size").addEventListener("input",i=>e("headerFontSize",parseInt(i.target.value)||12,!0));
-		    document.getElementById("input-table-header-font-color").addEventListener("change",i=>e("headerTextColor",i.target.value,!0));
-		    document.getElementById("input-table-bg-color").addEventListener("change",i=>e("backgroundColor",i.target.value,!0));
-		    document.getElementById("input-table-header-color").addEventListener("change",i=>e("headerColor",i.target.value,!0));
-		    document.getElementById("input-table-border-color").addEventListener("change",i=>e("borderColor",i.target.value,!0));
+    		    bindColorControl("input-table-header-font-color",color=>e("headerTextColor",color,!0));
+    		    bindColorControl("input-table-bg-color",color=>e("backgroundColor",color,!0));
+    		    bindColorControl("input-table-header-color",color=>e("headerColor",color,!0));
+    		    bindColorControl("input-table-border-color",color=>e("borderColor",color,!0));
 		    document.getElementById("input-table-border-width").addEventListener("input",i=>e("borderWidth",parseInt(i.target.value)||0,!0));
 		    document.getElementById("input-table-header").addEventListener("change",i=>e("header",i.target.checked,!0));
 		    document.getElementById("input-table-align").addEventListener("change",i=>e("textAlign",i.target.value,!0));
 		    document.getElementById("input-table-header-align").addEventListener("change",i=>e("headerTextAlign",i.target.value,!0));
 	    document.getElementById("input-font-family").addEventListener("change",i=>e("fontFamily",i.target.value,!0));
     document.getElementById("input-font-size").addEventListener("input",i=>e("fontSize",parseInt(i.target.value)||12,!0));
-    document.getElementById("input-font-color").addEventListener("change",i=>e("color",i.target.value,!0));
+    bindColorControl("input-font-color",color=>e("color",color,!0));
     document.getElementById("btn-font-bold").addEventListener("click",()=>{
       const i=this.state.getSelectedElement();
       if(!i)return;
@@ -3892,10 +4035,10 @@ class A {
 	    document.getElementById("btn-insert-link").addEventListener("click",()=>this.insertHyperlink());
 	    document.getElementById("btn-remove-link").addEventListener("click",()=>this.removeHyperlink());
 	    document.addEventListener("selectionchange",()=>this.rememberTextSelection());
-	    document.getElementById("input-bg-color").addEventListener("change",i=>e("backgroundColor",i.target.value,!0));
+    	    bindColorControl("input-bg-color",color=>e("backgroundColor",color,!0));
     document.getElementById("input-border-radius").addEventListener("input",i=>e("borderRadius",parseInt(i.target.value)||0,!0));
     document.getElementById("input-border-width").addEventListener("input",i=>e("borderWidth",parseInt(i.target.value)||0,!0));
-    document.getElementById("input-border-color").addEventListener("change",i=>e("borderColor",i.target.value,!0));
+    bindColorControl("input-border-color",color=>e("borderColor",color,!0));
     document.getElementById("input-border-style").addEventListener("change",i=>e("borderStyle",i.target.value,!0));
 	    document.getElementById("btn-bring-front").addEventListener("click",()=>{this.state.selectedElementId&&this.state.bringToFront(this.state.selectedElementId)});
 	    document.getElementById("btn-send-back").addEventListener("click",()=>{this.state.selectedElementId&&this.state.sendToBack(this.state.selectedElementId)});
@@ -3910,7 +4053,7 @@ class A {
       t==="gradient"?s="linear-gradient(135deg, #1e1e24 0%, #2d3748 100%)":t==="image"&&(s="https://images.unsplash.com/photo-1579546929518-9e396f3cc809?w=800");
       n({type:t,value:s});
     });
-    document.getElementById("input-slide-bg-color").addEventListener("change",i=>n({value:i.target.value}));
+    bindColorControl("input-slide-bg-color",color=>n({value:color}));
     document.getElementById("input-slide-bg-gradient").addEventListener("change",i=>n({value:i.target.value}));
     document.getElementById("input-slide-bg-image").addEventListener("change",i=>n({value:i.target.value}));
     document.getElementById("select-slide-master").addEventListener("change",i=>this.state.setCurrentSlideMaster(i.target.value));
@@ -3990,7 +4133,7 @@ class A {
     const chartDataInput = document.getElementById("input-chart-data");
     
     if (chartTypeInput) chartTypeInput.addEventListener("change", i => e("chartType", i.target.value, !0));
-    if (chartColorInput) chartColorInput.addEventListener("change", i => e("chartColor", i.target.value, !0));
+    if (chartColorInput) bindColorControl("input-chart-color",color=>e("chartColor",color,!0));
     if (chartLegendInput) chartLegendInput.addEventListener("change", i => e("showLegend", i.target.checked, !0));
     if (chartDataInput) {
       chartDataInput.addEventListener("input", i => {
@@ -4831,8 +4974,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const btnOpen = document.createElement("button");
         btnOpen.className = "tool-btn secondary text-btn compact";
         btnOpen.textContent = "開く";
-        btnOpen.addEventListener("click", () => {
-          f.switchProject(proj.id);
+        btnOpen.addEventListener("click", async () => {
+          await f.switchProject(proj.id);
           closeProjModal();
         });
         actions.appendChild(btnOpen);
@@ -4855,8 +4998,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnDup = document.createElement("button");
       btnDup.className = "tool-btn secondary text-btn compact";
       btnDup.textContent = "複製";
-      btnDup.addEventListener("click", () => {
-        if (f.duplicateProject(proj.id)) {
+      btnDup.addEventListener("click", async () => {
+        if (await f.duplicateProject(proj.id)) {
           renderProjectList();
         } else {
           alert("複製に失敗しました。");
@@ -4869,9 +5012,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const btnDel = document.createElement("button");
         btnDel.className = "tool-btn danger text-btn compact";
         btnDel.textContent = "削除";
-        btnDel.addEventListener("click", () => {
+        btnDel.addEventListener("click", async () => {
           if (confirm(`本当にプロジェクト「${proj.name}」を削除しますか？`)) {
-            f.deleteProject(proj.id);
+            await f.deleteProject(proj.id);
             renderProjectList();
           }
         });
@@ -6007,6 +6150,23 @@ input[type=color]::-webkit-color-swatch-wrapper {
 input[type=color]::-webkit-color-swatch {
   border: none;
   border-radius: 5px;
+}
+.color-input-pair {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.color-input-pair input[type=color] {
+  flex: 0 0 42px;
+  width: 42px;
+}
+.color-code-input {
+  min-width: 0;
+  font-family: monospace;
+  text-transform: uppercase;
+}
+.color-code-input[aria-invalid="true"] {
+  border-color: #ef4444;
 }
 .slide-context-menu {
   position: fixed;
