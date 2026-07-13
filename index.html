@@ -615,6 +615,11 @@ function sanitizeTextHTML(html) {
     if (tag === "br") return document.createElement("br");
     const fragment = document.createDocumentFragment();
     Array.from(node.childNodes).forEach(child => fragment.appendChild(cleanNode(child)));
+    if (["ul", "ol", "li"].includes(tag)) {
+      const listNode = document.createElement(tag);
+      listNode.appendChild(fragment);
+      return listNode;
+    }
     if (tag !== "a") return fragment;
     const href = node.getAttribute("href") || "";
     if (!isAllowedLink(href)) return fragment;
@@ -649,6 +654,25 @@ function replaceSlidePageTokens(value, pageContext) {
 function getTextHTML(elem, pageContext) {
   const html = elem && elem.html ? sanitizeTextHTML(elem.html) : escapeHTML(elem && elem.content).replace(/\n/g, "<br>");
   return replaceSlidePageTokens(html, pageContext);
+}
+
+function markdownListToHTML(items) {
+  let index = 0;
+  const renderLevel = level => {
+    const type = items[index].type;
+    let html = `<${type}>`;
+    while (index < items.length && items[index].level === level && items[index].type === type) {
+      const item = items[index++];
+      html += `<li>${escapeHTML(item.text)}`;
+      if (index < items.length && items[index].level > level) html += renderLevel(items[index].level);
+      html += "</li>";
+    }
+    html += `</${type}>`;
+    return html;
+  };
+  let html = "";
+  while (index < items.length) html += renderLevel(items[index].level);
+  return html;
 }
 
 function normalizeTableContent(elem) {
@@ -736,26 +760,44 @@ function getPPTXTextRuns(elem, pageContext) {
   const host = document.createElement("div");
   host.innerHTML = getTextHTML(elem, pageContext);
   const runs = [];
-  let hasLink = false;
+  let hasRichText = false;
+  const addList = (list, level) => {
+    Array.from(list.children).filter(node => node.tagName && node.tagName.toLowerCase() === "li").forEach(item => {
+      const nested = Array.from(item.children).filter(node => ["ul", "ol"].includes(node.tagName.toLowerCase()));
+      const clone = item.cloneNode(true);
+      Array.from(clone.children).filter(node => ["ul", "ol"].includes(node.tagName.toLowerCase())).forEach(node => node.remove());
+      const text = clone.textContent || "";
+      if (text) {
+        runs.push({ text, options: { bullet: list.tagName.toLowerCase() === "ol" ? { type: "number" } : true, indentLevel: level, breakLine: true } });
+        hasRichText = true;
+      }
+      nested.forEach(child => addList(child, level + 1));
+    });
+  };
   const walk = (node, linkUrl) => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent || "";
       if (!text) return;
       const options = linkUrl ? { hyperlink: { url: linkUrl }, color: "0563C1", underline: true } : {};
-      if (linkUrl) hasLink = true;
+      if (linkUrl) hasRichText = true;
       runs.push({ text, options });
       return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
-    if (node.tagName.toLowerCase() === "br") {
+    const tag = node.tagName.toLowerCase();
+    if (tag === "br") {
       runs.push({ text: "\n", options: linkUrl ? { hyperlink: { url: linkUrl }, color: "0563C1", underline: true } : {} });
       return;
     }
-    const nextLink = node.tagName.toLowerCase() === "a" ? node.getAttribute("href") : linkUrl;
+    if (tag === "ul" || tag === "ol") {
+      addList(node, 0);
+      return;
+    }
+    const nextLink = tag === "a" ? node.getAttribute("href") : linkUrl;
     Array.from(node.childNodes).forEach(child => walk(child, nextLink));
   };
   Array.from(host.childNodes).forEach(child => walk(child, null));
-  return hasLink ? runs : null;
+  return hasRichText ? runs : null;
 }
 
 function addPDFLinks(pdf, slideEl) {
@@ -2320,9 +2362,15 @@ class I {
           imageAlt = trimmed.slice(2, altEnd).trim();
           imageUrl = trimmed.slice(altEnd + 2, trimmed.length - 1).trim();
         }
-        // Bullets
-        else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-          bullets.push(trimmed.slice(2).trim());
+        // Bullets and numbered lists. Two spaces (or one tab) create one nested level.
+        else if (/^(?:[-*]\s+|\d+[.)]\s+)/.test(trimmed)) {
+          const indent = (line.match(/^\s*/) || [""])[0].replace(/\t/g, "  ").length;
+          const ordered = /^\d+[.)]\s+/.test(trimmed);
+          bullets.push({
+            text: trimmed.replace(/^(?:[-*]\s+|\d+[.)]\s+)/, "").trim(),
+            type: ordered ? "ol" : "ul",
+            level: Math.floor(indent / 2)
+          });
         }
         // Speaker notes comment: <!-- notes -->
         else if (trimmed.startsWith("<!--") && trimmed.includes("-->")) {
@@ -2352,7 +2400,7 @@ class I {
             style: { fontSize: 56, color: "#ffffff", fontWeight: "bold", fontStyle: "normal", textDecoration: "none", textAlign: "center", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
           });
         }
-        const subtitle = normalTexts.join("\n") || (bullets.length > 0 ? bullets.join("\n") : "");
+        const subtitle = normalTexts.join("\n") || (bullets.length > 0 ? bullets.map(item => item.text).join("\n") : "");
         if (subtitle) {
           elements.push({
             id: makeId("elem"),
@@ -2362,6 +2410,7 @@ class I {
             width: 1000,
             height: 120,
             content: subtitle,
+            html: bullets.length > 0 && normalTexts.length === 0 ? markdownListToHTML(bullets) : undefined,
             style: { fontSize: 24, color: "#cbd5e1", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", textAlign: "center", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
           });
         }
@@ -2380,8 +2429,10 @@ class I {
         }
         
         let textContent = "";
+        let textHTML = "";
         if (bullets.length > 0) {
-          textContent = bullets.map(b => "・ " + b).join("\n");
+          textContent = bullets.map(item => item.text).join("\n");
+          textHTML = markdownListToHTML(bullets);
         } else if (normalTexts.length > 0) {
           textContent = normalTexts.join("\n");
         }
@@ -2396,6 +2447,7 @@ class I {
               width: 560,
               height: 440,
               content: textContent,
+              html: textHTML || undefined,
               style: { fontSize: 24, color: "#e5e7eb", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", textAlign: "left", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
             });
           }
@@ -2419,6 +2471,7 @@ class I {
               width: 1120,
               height: 440,
               content: textContent,
+              html: textHTML || undefined,
               style: { fontSize: 24, color: "#e5e7eb", fontWeight: "normal", fontStyle: "normal", textDecoration: "none", textAlign: "left", fontFamily: "Inter, Noto Sans JP, sans-serif", backgroundColor: "transparent" }
             });
           }
@@ -3934,6 +3987,38 @@ class A {
 	    this.syncTextEditor(elem.id,editor);
 	    this.rememberTextSelection();
 	  }
+	  applyTextList(command){
+	    const elem=this.state.getSelectedElement();
+	    if(!elem||elem.type!=="text")return;
+	    const editor=this.getActiveTextEditor(elem.id);
+	    if(!editor)return;
+	    editor.focus();
+	    if(!this.selectionBelongsTo(editor)&&!this.restoreTextSelection(editor,elem.id)){
+	      const range=document.createRange();
+	      range.selectNodeContents(editor);
+	      range.collapse(false);
+	      const sel=window.getSelection();
+	      sel.removeAllRanges();
+	      sel.addRange(range);
+	    }
+	    document.execCommand(command,false,null);
+	    this.syncTextEditor(elem.id,editor);
+	    this.rememberTextSelection();
+	  }
+	  changeTextListLevel(direction){
+	    const elem=this.state.getSelectedElement();
+	    if(!elem||elem.type!=="text")return false;
+	    const editor=this.getActiveTextEditor(elem.id);
+	    if(!editor||!this.selectionBelongsTo(editor))return false;
+	    const selection=window.getSelection();
+	    const node=selection&&selection.anchorNode;
+	    const element=node&&(node.nodeType===Node.ELEMENT_NODE?node:node.parentElement);
+	    if(!element||!element.closest("li"))return false;
+	    document.execCommand(direction>0?"indent":"outdent",false,null);
+	    this.syncTextEditor(elem.id,editor);
+	    this.rememberTextSelection();
+	    return true;
+	  }
 	  bindDOMEvents(){
     const e=(i,t,s=!1)=>{
       const r=this.state.selectedElementId;
@@ -4030,11 +4115,18 @@ class A {
 	    document.getElementById("btn-align-left").addEventListener("click",()=>e("textAlign","left",!0));
 	    document.getElementById("btn-align-center").addEventListener("click",()=>e("textAlign","center",!0));
 	    document.getElementById("btn-align-right").addEventListener("click",()=>e("textAlign","right",!0));
+	    ["btn-list-bulleted","btn-list-numbered"].forEach(id=>document.getElementById(id).addEventListener("mousedown",event=>event.preventDefault()));
+	    document.getElementById("btn-list-bulleted").addEventListener("click",()=>this.applyTextList("insertUnorderedList"));
+	    document.getElementById("btn-list-numbered").addEventListener("click",()=>this.applyTextList("insertOrderedList"));
 	    document.getElementById("btn-insert-link").addEventListener("mousedown",i=>i.preventDefault());
 	    document.getElementById("btn-remove-link").addEventListener("mousedown",i=>i.preventDefault());
 	    document.getElementById("btn-insert-link").addEventListener("click",()=>this.insertHyperlink());
 	    document.getElementById("btn-remove-link").addEventListener("click",()=>this.removeHyperlink());
 	    document.addEventListener("selectionchange",()=>this.rememberTextSelection());
+	    document.addEventListener("keydown",event=>{
+	      if(event.key!=="Tab")return;
+	      if(this.changeTextListLevel(event.shiftKey?-1:1))event.preventDefault();
+	    });
     	    bindColorControl("input-bg-color",color=>e("backgroundColor",color,!0));
     document.getElementById("input-border-radius").addEventListener("input",i=>e("borderRadius",parseInt(i.target.value)||0,!0));
     document.getElementById("input-border-width").addEventListener("input",i=>e("borderWidth",parseInt(i.target.value)||0,!0));
@@ -5922,6 +6014,18 @@ body {
 	  text-decoration: underline;
 	  cursor: pointer;
 	}
+	.text-inner ul,
+	.text-inner ol {
+	  margin: 0;
+	  padding-left: 1.35em;
+	}
+	.text-inner li {
+	  margin: 0.15em 0;
+	}
+	.text-inner li > ul,
+	.text-inner li > ol {
+	  margin-top: 0.15em;
+	}
 .shape-inner {
   width: 100%;
   height: 100%;
@@ -6999,6 +7103,11 @@ input[type=color]::-webkit-color-swatch {
               <button id="btn-font-italic" class="tool-btn icon-btn" title="斜体"><em style="font-size:14px;font-family:serif;">I</em></button>
               <button id="btn-font-underline" class="tool-btn icon-btn" title="下線"><span style="text-decoration:underline;font-size:14px;">U</span></button>
             </div>
+            <div class="btn-group mt-8">
+              <button id="btn-list-bulleted" class="tool-btn icon-btn" title="箇条書き">•☷</button>
+              <button id="btn-list-numbered" class="tool-btn icon-btn" title="番号付きリスト">1☷</button>
+            </div>
+            <span class="form-help">リスト項目では Tab で階層を下げ、Shift+Tab で上げます。</span>
             <div class="btn-group mt-8">
               <button id="btn-align-left" class="tool-btn icon-btn" title="左揃え">
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="17" y1="18" x2="3" y2="18"></line></svg>
