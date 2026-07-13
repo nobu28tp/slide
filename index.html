@@ -904,8 +904,11 @@ function toPPTXColor(value, fallback = "FFFFFF") {
 
 const PPTX_FONT_SCALE = 72 / 128;
 const SLIDE_CLIPBOARD_TYPE = "slidecraft-slide";
-const SLIDE_CLIPBOARD_VERSION = "2.2.0";
+const ELEMENT_CLIPBOARD_TYPE = "slidecraft-elements";
+const SLIDE_CLIPBOARD_VERSION = "2.2.1";
 const SLIDE_CLIPBOARD_STORAGE_KEY = "slidecraft_slide_clipboard";
+const ELEMENT_CLIPBOARD_STORAGE_KEY = "slidecraft_element_clipboard";
+const SUPPORTED_ELEMENT_TYPES = new Set(["text", "image", "shape", "iframe", "table", "chart", "svg", "mermaid"]);
 
 function cloneJSON(value) {
   return JSON.parse(JSON.stringify(value || null));
@@ -1972,7 +1975,7 @@ class I {
   exportMasterJSON() {
     this.ensureDefaultLayouts(this.defaultMasterId);
     return {
-      version: "2.2.0",
+      version: "2.2.1",
       type: "slidecraft-template",
       theme: cloneJSON(this.theme || {}),
       masters: cloneJSON(this.masters || []),
@@ -1990,7 +1993,7 @@ class I {
       layouts: this.layouts || [],
       defaultMasterId: this.defaultMasterId,
       defaultLayoutId: this.defaultLayoutId,
-      version: "2.2.0"
+      version: "2.2.1"
     };
   }
   updateSlideNotes(slideId, notesText, isDirect = false) {
@@ -2002,30 +2005,52 @@ class I {
       this.notify("slideNotesUpdate", { slideId: slideId });
     }
   }
-	  copySelectedElement() {
+	  createElementClipboardPayload() {
 	    const slide = this.getCurrentSlide();
 	    const selected = this.getSelectedElements();
-	    if (!slide || selected.length === 0) return;
+	    if (!slide || selected.length === 0) return null;
 	    const selectedIds = new Set(selected.map(element => element.id));
 	    const groupIds = new Set(selected.map(element => element.groupId).filter(Boolean));
 	    const elements = slide.elements.filter(element => selectedIds.has(element.id) || (element.groupId && groupIds.has(element.groupId)));
-	    if (elements.length === 0) return;
+	    if (elements.length === 0) return null;
 	    const minX = Math.min(...elements.map(element => element.x || 0));
 	    const minY = Math.min(...elements.map(element => element.y || 0));
 	    const maxX = Math.max(...elements.map(element => (element.x || 0) + (element.width || 0)));
 	    const maxY = Math.max(...elements.map(element => (element.y || 0) + (element.height || 0)));
-	    this.clipboard = {
-	      type: "slidecraft-elements",
+	    return {
+	      type: ELEMENT_CLIPBOARD_TYPE,
+	      version: SLIDE_CLIPBOARD_VERSION,
+	      createdAt: Date.now(),
 	      elements: JSON.parse(JSON.stringify(elements)),
 	      bounds: { minX, minY, width: maxX - minX, height: maxY - minY }
 	    };
 	  }
-  pasteCopiedElement() {
-    if (!this.clipboard) return;
+  async copySelectedElement() {
+    const payload = this.createElementClipboardPayload();
+    if (!payload) return false;
+    const text = JSON.stringify(payload);
+    this.clipboard = payload;
+    try {
+      localStorage.setItem(ELEMENT_CLIPBOARD_STORAGE_KEY, text);
+    } catch (err) {
+      console.warn("Element clipboard storage fallback failed", err);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (err) {
+        console.warn("Native element clipboard write failed; local fallback is available", err);
+      }
+    }
+    this.notify("elementCopy", { elementIds: payload.elements.map(element => element.id) });
+    return true;
+  }
+  importElementClipboardPayload(payload) {
     const slide = this.getCurrentSlide();
-    if (!slide) return;
-    const sourceElements = Array.isArray(this.clipboard.elements) ? this.clipboard.elements : [this.clipboard];
-    if (sourceElements.length === 0) return;
+    if (!slide || !payload || payload.type !== ELEMENT_CLIPBOARD_TYPE || !Array.isArray(payload.elements)) return { pasted: 0, skipped: 0 };
+    const skipped = payload.elements.filter(element => !element || typeof element !== "object" || !SUPPORTED_ELEMENT_TYPES.has(element.type)).length;
+    const sourceElements = payload.elements.filter(element => element && typeof element === "object" && SUPPORTED_ELEMENT_TYPES.has(element.type));
+    if (sourceElements.length === 0) return { pasted: 0, skipped };
     this.pushCheckpoint();
 	    const fallbackBounds = {
 	      minX: Math.min(...sourceElements.map(element => element.x || 0)),
@@ -2033,7 +2058,7 @@ class I {
 	      width: Math.max(...sourceElements.map(element => (element.x || 0) + (element.width || 0))) - Math.min(...sourceElements.map(element => element.x || 0)),
 	      height: Math.max(...sourceElements.map(element => (element.y || 0) + (element.height || 0))) - Math.min(...sourceElements.map(element => element.y || 0))
 	    };
-	    const bounds = this.clipboard.bounds || fallbackBounds;
+	    const bounds = payload.bounds || fallbackBounds;
 	    const targetX = Math.max(0, Math.min(S - bounds.width, bounds.minX + 30));
 	    const targetY = Math.max(0, Math.min(x - bounds.height, bounds.minY + 30));
 	    const deltaX = targetX - bounds.minX;
@@ -2054,7 +2079,32 @@ class I {
 	    this.selectedElementId = pasted[0].id;
 	    this.selectedElementIds = pasted.map(element => element.id);
 	    this.saveToStorage();
-	    this.notify("elementAdd", { elementIds: this.selectedElementIds });
+	    this.notify("elementAdd", { elementIds: this.selectedElementIds, skipped });
+	    return { pasted: pasted.length, skipped };
+	  }
+  async pasteCopiedElement() {
+    let payload = null;
+    let nativeText = "";
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      try {
+        nativeText = await navigator.clipboard.readText();
+      } catch (err) {
+        console.warn("Native element clipboard read failed; trying local fallback", err);
+      }
+	    }
+	    if (nativeText) {
+	      try { payload = JSON.parse(nativeText); } catch { return { pasted: 0, skipped: 0 }; }
+	    } else {
+	      const fallbackText = (() => {
+	        try { return localStorage.getItem(ELEMENT_CLIPBOARD_STORAGE_KEY); } catch { return null; }
+	      })();
+	      if (fallbackText) {
+	        try { payload = JSON.parse(fallbackText); } catch { payload = null; }
+	      } else {
+	        payload = this.clipboard;
+	      }
+	    }
+	    return this.importElementClipboardPayload(payload);
 	  }
 	  selectElement(e, n = {}) {
 	    const prevIds = this.getSelectedElementIds();
@@ -4312,6 +4362,14 @@ class A {
     
     document.getElementById("btn-new-project").addEventListener("click",()=>{safeConfirm("現在のプロジェクトを破棄して新規作成しますか？")&&this.state.newProject()});
     document.getElementById("btn-export-json").addEventListener("click",()=>this.exporter.exportJSON());
+    document.getElementById("btn-copy-elements").addEventListener("click", async () => {
+      const copied = await this.state.copySelectedElement();
+      alert(copied ? "選択要素をコピーしました。別タブのSlideCraftで貼り付けできます。" : "コピーする要素を選択してください。");
+    });
+    document.getElementById("btn-paste-elements").addEventListener("click", async () => {
+      const result = await this.state.pasteCopiedElement();
+      alert(result.pasted ? `要素を${result.pasted}件貼り付けました。${result.skipped ? ` 未対応の要素${result.skipped}件は除外しました。` : ""}` : "クリップボードにSlideCraftの要素データがありません。");
+    });
     document.getElementById("btn-save-master").addEventListener("click",()=>this.exporter.exportMasterJSON());
     document.getElementById("input-import-master").addEventListener("change",i=>{
       const t=i.target.files[0];
@@ -5020,7 +5078,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
-  console.log("SlideCraft v2.2.0 Initializing in Editor Mode...");
+  console.log("SlideCraft v2.2.1 Initializing in Editor Mode...");
   window.appState = new I();
   const f = window.appState;
   const e = new w(f, "slide-canvas", "canvas-wrapper");
@@ -5054,10 +5112,17 @@ document.addEventListener("DOMContentLoaded", () => {
 	      return;
 	    }
     if ((y.ctrlKey || y.metaKey) && y.key.toLowerCase() === "c") {
-      f.copySelectedElement();
-    }
+      y.preventDefault();
+      f.copySelectedElement().then(copied => {
+        if (!copied) alert("コピーする要素を選択してください。");
+      }).catch(err => console.error("Element copy failed", err));
+	    }
 	    if ((y.ctrlKey || y.metaKey) && y.key.toLowerCase() === "v") {
-	      f.pasteCopiedElement();
+	      y.preventDefault();
+	      f.pasteCopiedElement().then(result => {
+	        if (!result.pasted) alert("クリップボードにSlideCraftの要素データがありません。");
+	        else if (result.skipped) alert(`要素を${result.pasted}件貼り付けました。未対応の要素${result.skipped}件は除外しました。`);
+	      }).catch(err => console.error("Element paste failed", err));
 	    }
 	    if ((y.ctrlKey || y.metaKey) && y.key.toLowerCase() === "g") {
 	      y.preventDefault();
@@ -7015,7 +7080,7 @@ input[type=color]::-webkit-color-swatch {
   <header id="app-header">
     <div class="logo-section">
       <h1 class="logo-text" style="margin-right:12px;">SlideCraft</h1>
-      <span class="logo-badge" style="margin-right:20px;">v2.2.0</span>
+      <span class="logo-badge" style="margin-right:20px;">v2.2.1</span>
       <nav class="app-menu-bar">
         <div class="menu-dropdown-container">
           <button class="menu-bar-btn">プロジェクト</button>
@@ -7036,6 +7101,15 @@ input[type=color]::-webkit-color-swatch {
             <input type="file" id="input-import-master" accept="application/json" style="display:none">
             <div class="menu-divider"></div>
             <button id="btn-import-markdown-trigger" class="menu-dropdown-item"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg> Markdownから生成</button>
+          </div>
+        </div>
+        <div class="menu-dropdown-container">
+          <button class="menu-bar-btn">編集</button>
+          <div class="menu-dropdown-list">
+            <button id="btn-copy-elements" class="menu-dropdown-item">選択要素をコピー <span class="menu-shortcut">Ctrl/Cmd+C</span></button>
+            <button id="btn-paste-elements" class="menu-dropdown-item">要素を貼り付け <span class="menu-shortcut">Ctrl/Cmd+V</span></button>
+            <div class="menu-divider"></div>
+            <div class="menu-dropdown-hint">ページ全体: Ctrl/Cmd+Shift+C / Ctrl/Cmd+Shift+V</div>
           </div>
         </div>
         <div class="menu-dropdown-container">
