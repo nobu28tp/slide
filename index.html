@@ -904,7 +904,7 @@ function toPPTXColor(value, fallback = "FFFFFF") {
 
 const PPTX_FONT_SCALE = 72 / 128;
 const SLIDE_CLIPBOARD_TYPE = "slidecraft-slide";
-const SLIDE_CLIPBOARD_VERSION = "2.1.0";
+const SLIDE_CLIPBOARD_VERSION = "2.2.0";
 const SLIDE_CLIPBOARD_STORAGE_KEY = "slidecraft_slide_clipboard";
 
 function cloneJSON(value) {
@@ -1972,7 +1972,7 @@ class I {
   exportMasterJSON() {
     this.ensureDefaultLayouts(this.defaultMasterId);
     return {
-      version: "2.1.0",
+      version: "2.2.0",
       type: "slidecraft-template",
       theme: cloneJSON(this.theme || {}),
       masters: cloneJSON(this.masters || []),
@@ -1990,7 +1990,7 @@ class I {
       layouts: this.layouts || [],
       defaultMasterId: this.defaultMasterId,
       defaultLayoutId: this.defaultLayoutId,
-      version: "2.1.0"
+      version: "2.2.0"
     };
   }
   updateSlideNotes(slideId, notesText, isDirect = false) {
@@ -2003,25 +2003,58 @@ class I {
     }
   }
 	  copySelectedElement() {
-	    const e = this.getSelectedElement();
-	    e && (this.clipboard = JSON.parse(JSON.stringify(e)));
+	    const slide = this.getCurrentSlide();
+	    const selected = this.getSelectedElements();
+	    if (!slide || selected.length === 0) return;
+	    const selectedIds = new Set(selected.map(element => element.id));
+	    const groupIds = new Set(selected.map(element => element.groupId).filter(Boolean));
+	    const elements = slide.elements.filter(element => selectedIds.has(element.id) || (element.groupId && groupIds.has(element.groupId)));
+	    if (elements.length === 0) return;
+	    const minX = Math.min(...elements.map(element => element.x || 0));
+	    const minY = Math.min(...elements.map(element => element.y || 0));
+	    const maxX = Math.max(...elements.map(element => (element.x || 0) + (element.width || 0)));
+	    const maxY = Math.max(...elements.map(element => (element.y || 0) + (element.height || 0)));
+	    this.clipboard = {
+	      type: "slidecraft-elements",
+	      elements: JSON.parse(JSON.stringify(elements)),
+	      bounds: { minX, minY, width: maxX - minX, height: maxY - minY }
+	    };
 	  }
   pasteCopiedElement() {
     if (!this.clipboard) return;
-    const e = this.getCurrentSlide();
-    if (!e) return;
+    const slide = this.getCurrentSlide();
+    if (!slide) return;
+    const sourceElements = Array.isArray(this.clipboard.elements) ? this.clipboard.elements : [this.clipboard];
+    if (sourceElements.length === 0) return;
     this.pushCheckpoint();
-    const n = JSON.parse(JSON.stringify(this.clipboard));
-    n.id = "elem-" + Math.random().toString(36).substr(2, 9);
-    n.x = (n.x || 100) + 30;
-    n.y = (n.y || 100) + 30;
-    n.x > 1100 && (n.x = 100);
-    n.y > 600 && (n.y = 100);
-    e.elements.push(n);
-    this.selectedElementId = n.id;
-	    this.selectedElementIds = [n.id];
+	    const fallbackBounds = {
+	      minX: Math.min(...sourceElements.map(element => element.x || 0)),
+	      minY: Math.min(...sourceElements.map(element => element.y || 0)),
+	      width: Math.max(...sourceElements.map(element => (element.x || 0) + (element.width || 0))) - Math.min(...sourceElements.map(element => element.x || 0)),
+	      height: Math.max(...sourceElements.map(element => (element.y || 0) + (element.height || 0))) - Math.min(...sourceElements.map(element => element.y || 0))
+	    };
+	    const bounds = this.clipboard.bounds || fallbackBounds;
+	    const targetX = Math.max(0, Math.min(S - bounds.width, bounds.minX + 30));
+	    const targetY = Math.max(0, Math.min(x - bounds.height, bounds.minY + 30));
+	    const deltaX = targetX - bounds.minX;
+	    const deltaY = targetY - bounds.minY;
+	    const groupIds = new Map();
+	    const pasted = sourceElements.map(source => {
+	      const element = JSON.parse(JSON.stringify(source));
+	      element.id = "elem-" + Math.random().toString(36).substr(2, 9);
+	      element.x = (element.x || 0) + deltaX;
+	      element.y = (element.y || 0) + deltaY;
+	      if (element.groupId) {
+	        if (!groupIds.has(element.groupId)) groupIds.set(element.groupId, "group-" + Math.random().toString(36).substr(2, 9));
+	        element.groupId = groupIds.get(element.groupId);
+	      }
+	      return element;
+	    });
+	    slide.elements.push(...pasted);
+	    this.selectedElementId = pasted[0].id;
+	    this.selectedElementIds = pasted.map(element => element.id);
 	    this.saveToStorage();
-	    this.notify("elementAdd", { elementId: n.id });
+	    this.notify("elementAdd", { elementIds: this.selectedElementIds });
 	  }
 	  selectElement(e, n = {}) {
 	    const prevIds = this.getSelectedElementIds();
@@ -4987,7 +5020,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
-  console.log("SlideCraft v2.1.0 Initializing in Editor Mode...");
+  console.log("SlideCraft v2.2.0 Initializing in Editor Mode...");
   window.appState = new I();
   const f = window.appState;
   const e = new w(f, "slide-canvas", "canvas-wrapper");
@@ -6982,7 +7015,7 @@ input[type=color]::-webkit-color-swatch {
   <header id="app-header">
     <div class="logo-section">
       <h1 class="logo-text" style="margin-right:12px;">SlideCraft</h1>
-      <span class="logo-badge" style="margin-right:20px;">v2.1.0</span>
+      <span class="logo-badge" style="margin-right:20px;">v2.2.0</span>
       <nav class="app-menu-bar">
         <div class="menu-dropdown-container">
           <button class="menu-bar-btn">プロジェクト</button>
